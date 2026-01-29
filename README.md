@@ -285,26 +285,38 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📝 Roadmap
 
-### v0.2.0 (Upcoming)
-- [ ] Batch comment resolution
-- [ ] Comment templates
-- [ ] Review analytics
-- [ ] Collaborative review with real-time cursors
-- [ ] Video annotations
+### v0.2.0 (Next Release)
 
-### v0.3.0
-- [ ] Auto-fix suggestions from AI
-- [ ] Custom review checklists
-- [ ] Integration with JIRA/Linear
-- [ ] Slack notifications
-- [ ] Export review reports (PDF/Markdown)
+**AI Review Cache & Version Control**
+- [ ] Commit revision-based cache validation
+- [ ] Display outdated cache indicator with re-run prompt
+- [ ] Automatic latest version check for PR updates
 
-### Future
+**Automated Review Scheduling**
+- [ ] Cron-based automatic pre-review system
+- [ ] Multiple cron schedule support (e.g., 9:30 AM daily)
+- [ ] Configurable review triggers and notifications
+
+**Multi-Repository Support**
+- [ ] Add multiple repositories to PR review list
+- [ ] Repository/Project information management page
+- [ ] Cross-repository review workflow
+
+**AI Provider Extensions**
+- [ ] LM Studio provider integration
+- [ ] Ollama provider integration
+- [ ] Available model synchronization on provider connection test
+- [ ] Model selection UI for each provider
+
+### Future Considerations
 - [ ] VS Code extension
-- [ ] JetBrains plugin
+- [ ] JetBrains plugin integration
 - [ ] GitLab support
 - [ ] Bitbucket support
 - [ ] Self-hosted GitHub Enterprise support
+- [ ] Batch comment resolution
+- [ ] Comment templates library
+- [ ] Review analytics dashboard
 
 ## 🐛 Known Issues
 
