@@ -9,7 +9,7 @@ import { ProjectIndexService } from '../services/ProjectIndexService.js';
 export async function prRoutes(fastify: FastifyInstance) {
   const gitService = new GitService();
   const githubService = new GitHubCLIService();
-  const dbService = new DatabaseService();
+  const dbService = DatabaseService.getInstance();
   const configService = new ConfigService();
   const aiReviewService = new AIReviewService();
   const indexService = new ProjectIndexService();

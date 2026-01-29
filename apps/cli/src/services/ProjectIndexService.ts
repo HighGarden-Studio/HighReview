@@ -28,7 +28,7 @@ export class ProjectIndexService {
   private indexing: Map<string, Promise<void>> = new Map();
 
   constructor() {
-    this.dbService = new DatabaseService();
+    this.dbService = DatabaseService.getInstance();
     this.initializeDatabase();
   }
 

@@ -1,16 +1,20 @@
 import { FastifyInstance } from 'fastify';
+import { DatabaseService } from '../services/DatabaseService.js';
+import { CronService } from '../services/CronService.js';
 
 /**
  * Repository management routes
  * Handles repository configuration and cron schedules
  */
 export async function repositoriesRoutes(fastify: FastifyInstance) {
+  const db = DatabaseService.getInstance();
+  const cronService = CronService.getInstance();
+
   // Get all repositories
   fastify.get('/api/repositories', async (request, reply) => {
     try {
-      // TODO: Implement database query
-      // For now, return empty array
-      return reply.send([]);
+      const repositories = db.getAllRepositories();
+      return reply.send(repositories);
     } catch (error) {
       console.error('[Repositories] Failed to fetch repositories:', error);
       return reply.status(500).send({ error: 'Failed to fetch repositories' });
@@ -28,17 +32,13 @@ export async function repositoriesRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: 'Owner and name are required' });
       }
 
-      // TODO: Implement database insert
-      // For now, return success
-      const repository = {
-        id: `${owner}-${name}`,
-        owner,
-        name,
-        fullName: `${owner}/${name}`,
-        cronSchedule: '',
-        autoReview: false,
-      };
+      // Check if repository already exists
+      const existing = db.getRepositoryByOwnerAndName(owner, name);
+      if (existing) {
+        return reply.status(409).send({ error: 'Repository already exists' });
+      }
 
+      const repository = db.addRepository(owner, name);
       return reply.send(repository);
     } catch (error) {
       console.error('[Repositories] Failed to add repository:', error);
@@ -57,8 +57,14 @@ export async function repositoriesRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: 'Repository ID is required' });
       }
 
-      // TODO: Implement database delete
-      // For now, return success
+      // Stop cron job if exists
+      cronService.stopJob(id);
+
+      const success = db.removeRepository(id);
+      if (!success) {
+        return reply.status(404).send({ error: 'Repository not found' });
+      }
+
       return reply.send({ success: true });
     } catch (error) {
       console.error('[Repositories] Failed to remove repository:', error);
@@ -79,9 +85,28 @@ export async function repositoriesRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: 'Repository ID is required' });
       }
 
-      // TODO: Implement database update
-      // TODO: Update cron job if autoReview is enabled
-      // For now, return success
+      // Get repository
+      const repo = db.getRepository(id);
+      if (!repo) {
+        return reply.status(404).send({ error: 'Repository not found' });
+      }
+
+      // Update database
+      const success = db.updateCronSchedule(id, schedule || null, autoReview);
+      if (!success) {
+        return reply.status(500).send({ error: 'Failed to update cron schedule' });
+      }
+
+      // Update cron job
+      const updatedRepo = db.getRepository(id);
+      if (updatedRepo) {
+        if (autoReview && schedule) {
+          await cronService.scheduleJob(updatedRepo);
+        } else {
+          cronService.stopJob(id);
+        }
+      }
+
       return reply.send({ success: true, schedule, autoReview });
     } catch (error) {
       console.error('[Repositories] Failed to update cron schedule:', error);

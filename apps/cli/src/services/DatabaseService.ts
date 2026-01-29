@@ -44,10 +44,22 @@ export interface PullRequest {
   fetchedAt: string;
 }
 
+export interface Repository {
+  id: string;
+  owner: string;
+  name: string;
+  fullName: string;
+  cronSchedule: string | null;
+  autoReview: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export class DatabaseService {
   private db: Database.Database;
+  private static instance: DatabaseService;
 
-  constructor() {
+  private constructor() {
     const dbDir = join(homedir(), '.highreview');
     if (!existsSync(dbDir)) {
       mkdirSync(dbDir, { recursive: true });
@@ -57,6 +69,13 @@ export class DatabaseService {
     this.db = new Database(dbPath);
 
     this.initializeTables();
+  }
+
+  public static getInstance(): DatabaseService {
+    if (!DatabaseService.instance) {
+      DatabaseService.instance = new DatabaseService();
+    }
+    return DatabaseService.instance;
   }
 
   private initializeTables() {
@@ -111,6 +130,45 @@ export class DatabaseService {
       )
     `);
 
+    // Create repositories table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS repositories (
+        id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        fullName TEXT NOT NULL,
+        cronSchedule TEXT,
+        autoReview INTEGER NOT NULL DEFAULT 0,
+        createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL,
+        UNIQUE(owner, name)
+      )
+    `);
+
+    // Create settings table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updatedAt INTEGER NOT NULL
+      )
+    `);
+
+    // Create AI review cache table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS ai_review_cache (
+        id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        prNumber INTEGER NOT NULL,
+        commitSha TEXT NOT NULL,
+        optionsHash TEXT NOT NULL,
+        reviewData TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        UNIQUE(owner, repo, prNumber, commitSha, optionsHash)
+      )
+    `);
+
     // Create indexes for faster queries
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_pr_state
@@ -125,6 +183,16 @@ export class DatabaseService {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_file_commit
       ON chat_messages(file_path, commit_hash)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_repo_auto_review
+      ON repositories(autoReview)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_ai_cache_lookup
+      ON ai_review_cache(owner, repo, prNumber, commitSha, optionsHash)
     `);
   }
 
@@ -373,6 +441,198 @@ export class DatabaseService {
       SET review_status = ?, updated_at = CURRENT_TIMESTAMP
       WHERE owner = ? AND repo = ? AND pr_number = ?
     `).run(status, owner, repo, prNumber);
+  }
+
+  /**
+   * Get all repositories
+   */
+  getAllRepositories(): Repository[] {
+    const stmt = this.db.prepare('SELECT * FROM repositories ORDER BY createdAt DESC');
+    const rows = stmt.all() as any[];
+    return rows.map(row => ({
+      ...row,
+      autoReview: Boolean(row.autoReview),
+    }));
+  }
+
+  /**
+   * Get repository by ID
+   */
+  getRepository(id: string): Repository | null {
+    const stmt = this.db.prepare('SELECT * FROM repositories WHERE id = ?');
+    const row = stmt.get(id) as any;
+    if (!row) return null;
+    return {
+      ...row,
+      autoReview: Boolean(row.autoReview),
+    };
+  }
+
+  /**
+   * Get repository by owner and name
+   */
+  getRepositoryByOwnerAndName(owner: string, name: string): Repository | null {
+    const stmt = this.db.prepare('SELECT * FROM repositories WHERE owner = ? AND name = ?');
+    const row = stmt.get(owner, name) as any;
+    if (!row) return null;
+    return {
+      ...row,
+      autoReview: Boolean(row.autoReview),
+    };
+  }
+
+  /**
+   * Add repository
+   */
+  addRepository(owner: string, name: string): Repository {
+    const id = `${owner}-${name}`;
+    const fullName = `${owner}/${name}`;
+    const now = Date.now();
+
+    const stmt = this.db.prepare(`
+      INSERT INTO repositories (id, owner, name, fullName, cronSchedule, autoReview, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, NULL, 0, ?, ?)
+    `);
+
+    stmt.run(id, owner, name, fullName, now, now);
+
+    return {
+      id,
+      owner,
+      name,
+      fullName,
+      cronSchedule: null,
+      autoReview: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  /**
+   * Remove repository
+   */
+  removeRepository(id: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM repositories WHERE id = ?');
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Update cron schedule
+   */
+  updateCronSchedule(id: string, schedule: string | null, autoReview: boolean): boolean {
+    const stmt = this.db.prepare(`
+      UPDATE repositories
+      SET cronSchedule = ?, autoReview = ?, updatedAt = ?
+      WHERE id = ?
+    `);
+    const result = stmt.run(schedule, autoReview ? 1 : 0, Date.now(), id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Get repositories with auto review enabled
+   */
+  getAutoReviewRepositories(): Repository[] {
+    const stmt = this.db.prepare('SELECT * FROM repositories WHERE autoReview = 1');
+    const rows = stmt.all() as any[];
+    return rows.map(row => ({
+      ...row,
+      autoReview: Boolean(row.autoReview),
+    }));
+  }
+
+  /**
+   * Get setting by key
+   */
+  getSetting(key: string): string | null {
+    const stmt = this.db.prepare('SELECT value FROM settings WHERE key = ?');
+    const row = stmt.get(key) as any;
+    return row ? row.value : null;
+  }
+
+  /**
+   * Set setting
+   */
+  setSetting(key: string, value: string): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO settings (key, value, updatedAt)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = ?, updatedAt = ?
+    `);
+    const now = Date.now();
+    stmt.run(key, value, now, value, now);
+  }
+
+  /**
+   * Get all settings
+   */
+  getAllSettings(): Record<string, string> {
+    const stmt = this.db.prepare('SELECT key, value FROM settings');
+    const rows = stmt.all() as any[];
+    const settings: Record<string, string> = {};
+    rows.forEach(row => {
+      settings[row.key] = row.value;
+    });
+    return settings;
+  }
+
+  /**
+   * Get AI review cache
+   */
+  getAIReviewCache(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    commitSha: string,
+    optionsHash: string
+  ): any | null {
+    const stmt = this.db.prepare(`
+      SELECT reviewData FROM ai_review_cache
+      WHERE owner = ? AND repo = ? AND prNumber = ? AND commitSha = ? AND optionsHash = ?
+    `);
+    const row = stmt.get(owner, repo, prNumber, commitSha, optionsHash) as any;
+    return row ? JSON.parse(row.reviewData) : null;
+  }
+
+  /**
+   * Set AI review cache
+   */
+  setAIReviewCache(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    commitSha: string,
+    optionsHash: string,
+    reviewData: any
+  ): void {
+    const id = `${owner}-${repo}-${prNumber}-${commitSha}-${optionsHash}`;
+    const stmt = this.db.prepare(`
+      INSERT INTO ai_review_cache (id, owner, repo, prNumber, commitSha, optionsHash, reviewData, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(owner, repo, prNumber, commitSha, optionsHash) DO UPDATE SET reviewData = ?, createdAt = ?
+    `);
+    const now = Date.now();
+    const dataStr = JSON.stringify(reviewData);
+    stmt.run(id, owner, repo, prNumber, commitSha, optionsHash, dataStr, now, dataStr, now);
+  }
+
+  /**
+   * Check if AI review cache exists
+   */
+  hasAIReviewCache(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    commitSha: string,
+    optionsHash: string
+  ): boolean {
+    const stmt = this.db.prepare(`
+      SELECT 1 FROM ai_review_cache
+      WHERE owner = ? AND repo = ? AND prNumber = ? AND commitSha = ? AND optionsHash = ?
+    `);
+    const row = stmt.get(owner, repo, prNumber, commitSha, optionsHash);
+    return row !== undefined;
   }
 
   /**

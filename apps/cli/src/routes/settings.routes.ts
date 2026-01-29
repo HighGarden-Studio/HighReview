@@ -1,20 +1,28 @@
 import { FastifyInstance } from 'fastify';
+import { DatabaseService } from '../services/DatabaseService.js';
 
 /**
  * Settings routes
  * Handles general application settings
  */
 export async function settingsRoutes(fastify: FastifyInstance) {
+  const db = DatabaseService.getInstance();
+
   // Get settings
   fastify.get('/api/settings', async (request, reply) => {
     try {
-      // TODO: Implement config file reading
-      // For now, return default settings
+      const settings = db.getAllSettings();
+
+      // Parse AI provider settings
+      const aiProvider = settings['ai_provider']
+        ? JSON.parse(settings['ai_provider'])
+        : {
+            provider: 'claude-code',
+            model: 'claude-sonnet-4.5',
+          };
+
       return reply.send({
-        aiProvider: {
-          provider: 'claude-code',
-          model: 'claude-sonnet-4.5',
-        },
+        aiProvider,
       });
     } catch (error) {
       console.error('[Settings] Failed to fetch settings:', error);
@@ -33,9 +41,15 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: 'Provider is required' });
       }
 
-      // TODO: Implement config file update
-      // For now, return success
-      return reply.send({ success: true, provider, model, endpoint });
+      const aiProviderConfig = {
+        provider,
+        model: model || '',
+        endpoint: endpoint || '',
+      };
+
+      db.setSetting('ai_provider', JSON.stringify(aiProviderConfig));
+
+      return reply.send({ success: true, ...aiProviderConfig });
     } catch (error) {
       console.error('[Settings] Failed to update AI provider:', error);
       return reply.status(500).send({ error: 'Failed to update AI provider' });

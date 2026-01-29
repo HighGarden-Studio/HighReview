@@ -13,6 +13,7 @@ import { aiRoutes } from './routes/ai.routes.js';
 import { indexRoutes } from './routes/index.routes.js';
 import { repositoriesRoutes } from './routes/repositories.routes.js';
 import { settingsRoutes } from './routes/settings.routes.js';
+import { CronService } from './services/CronService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -65,6 +66,11 @@ export async function startServer(port: number) {
 
   // Settings 라우트 등록
   await fastify.register(settingsRoutes);
+
+  // Initialize cron jobs
+  const cronService = CronService.getInstance();
+  await cronService.initializeJobs();
+  console.log(`[Server] Initialized ${cronService.getActiveJobsCount()} cron jobs`);
 
   // 프로덕션 모드에서 빌드된 프론트엔드 정적 파일 서빙
   const publicPath = join(__dirname, '..', 'public');
