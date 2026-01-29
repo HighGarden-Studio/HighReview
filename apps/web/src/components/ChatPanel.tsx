@@ -11,6 +11,7 @@ import {
   formatFileReferencesForContext,
   type ResolvedFileReference,
 } from '../utils/fileReferenceParser';
+import { MentionAutocomplete, type MentionSuggestion } from './MentionAutocomplete';
 
 interface ChatMessage {
   id: number;
@@ -49,6 +50,175 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
   const [streamingMessage, setStreamingMessage] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Mention autocomplete state
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 });
+  const [mentionStartIndex, setMentionStartIndex] = useState(-1);
+
+  // Build mention suggestions from AI review data and files
+  const getMentionSuggestions = (): MentionSuggestion[] => {
+    const suggestions: MentionSuggestion[] = [];
+
+    // File suggestions (limit to 10 most recent)
+    // Note: In real implementation, fetch from file tree or worktree
+    suggestions.push({
+      type: 'file',
+      id: 'example',
+      label: 'Use @file:path:line format',
+      description: 'Example: @src/components/ChatPanel.tsx:50',
+    });
+
+    if (aiReviewData) {
+      // Issue suggestions
+      if (aiReviewData.issues) {
+        aiReviewData.issues.slice(0, 10).forEach((issue: any, idx: number) => {
+          suggestions.push({
+            type: 'issue',
+            id: idx.toString(),
+            label: `Issue #${idx}: ${issue.file}:${issue.line}`,
+            description: issue.message.substring(0, 100),
+          });
+        });
+      }
+
+      // Change intent suggestions
+      if (aiReviewData.changeIntents) {
+        aiReviewData.changeIntents.slice(0, 10).forEach((change: any, idx: number) => {
+          suggestions.push({
+            type: 'change',
+            id: idx.toString(),
+            label: `Change #${idx}: ${change.file}`,
+            description: change.intent.substring(0, 100),
+          });
+        });
+      }
+
+      // Impact suggestions
+      if (aiReviewData.impactAnalysis) {
+        suggestions.push({
+          type: 'impact',
+          id: '0',
+          label: 'Impact Analysis',
+          description: `Scope: ${aiReviewData.impactAnalysis.scope || 'Unknown'}`,
+        });
+      }
+
+      // Call stack suggestions
+      if (aiReviewData.callStacks) {
+        aiReviewData.callStacks.slice(0, 5).forEach((stack: any, idx: number) => {
+          suggestions.push({
+            type: 'callstack',
+            id: idx.toString(),
+            label: `Call Stack #${idx}`,
+            description: stack.function || 'Function flow analysis',
+          });
+        });
+      }
+
+      // Semantic suggestions
+      if (aiReviewData.semanticChanges) {
+        const moved = aiReviewData.semanticChanges.movedCode?.slice(0, 5);
+        moved?.forEach((move: any, idx: number) => {
+          suggestions.push({
+            type: 'semantic',
+            id: `moved-${idx}`,
+            label: `Moved: ${move.fromFile} → ${move.toFile}`,
+            description: move.content?.substring(0, 100),
+          });
+        });
+
+        const refactored = aiReviewData.semanticChanges.refactorings?.slice(0, 5);
+        refactored?.forEach((refactor: any, idx: number) => {
+          suggestions.push({
+            type: 'semantic',
+            id: `refactor-${idx}`,
+            label: `Refactoring: ${refactor.file}`,
+            description: refactor.description?.substring(0, 100),
+          });
+        });
+      }
+    }
+
+    return suggestions;
+  };
+
+  // Detect @ input and show mention autocomplete
+  const handleInputChange = (value: string) => {
+    setInput(value);
+
+    const cursorPosition = textareaRef.current?.selectionStart || 0;
+    const textBeforeCursor = value.substring(0, cursorPosition);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+
+    if (lastAtIndex !== -1) {
+      const queryAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
+      // Show autocomplete if @ is followed by nothing or word characters
+      if (/^[\w:\/\-_.]*$/.test(queryAfterAt)) {
+        setMentionQuery(queryAfterAt);
+        setMentionStartIndex(lastAtIndex);
+        setShowMentions(true);
+
+        // Calculate position for autocomplete dropdown
+        if (textareaRef.current) {
+          const textarea = textareaRef.current;
+          const { top, left, height } = textarea.getBoundingClientRect();
+          // Position below cursor (approximate)
+          setMentionPosition({
+            top: top + height + 5,
+            left: left + 10,
+          });
+        }
+      } else {
+        setShowMentions(false);
+      }
+    } else {
+      setShowMentions(false);
+    }
+  };
+
+  // Handle mention selection
+  const handleMentionSelect = (suggestion: MentionSuggestion) => {
+    if (mentionStartIndex === -1) return;
+
+    const beforeMention = input.substring(0, mentionStartIndex);
+    const afterCursor = input.substring(textareaRef.current?.selectionStart || input.length);
+
+    let insertText = '';
+    switch (suggestion.type) {
+      case 'file':
+        insertText = '@file:path:line'; // User will replace with actual file
+        break;
+      case 'issue':
+        insertText = `@issue:${suggestion.id}`;
+        break;
+      case 'change':
+        insertText = `@change:${suggestion.id}`;
+        break;
+      case 'impact':
+        insertText = `@impact:${suggestion.id}`;
+        break;
+      case 'callstack':
+        insertText = `@callstack:${suggestion.id}`;
+        break;
+      case 'semantic':
+        insertText = `@semantic:${suggestion.id}`;
+        break;
+    }
+
+    const newInput = beforeMention + insertText + ' ' + afterCursor;
+    setInput(newInput);
+    setShowMentions(false);
+
+    // Focus back to textarea
+    setTimeout(() => {
+      textareaRef.current?.focus();
+      const newCursorPos = beforeMention.length + insertText.length + 1;
+      textareaRef.current?.setSelectionRange(newCursorPos, newCursorPos);
+    }, 0);
+  };
 
   // Detect file references in input as user types
   useEffect(() => {
@@ -299,14 +469,19 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
-            <div className="text-center space-y-3">
+            <div className="text-center space-y-3 max-w-md">
               <p className="text-light-text-muted dark:text-dark-text-muted mb-2">
                 Select code and ask me anything!
               </p>
               <div className="text-xs text-light-text-muted dark:text-dark-text-muted space-y-1">
-                <p>Try: "Explain this function"</p>
-                <p>Reference files: "@src/components/ChatPanel.tsx"</p>
-                <p>Reference lines: "@src/utils/parser.ts:50-100"</p>
+                <p className="font-semibold mb-2">Examples:</p>
+                <p>• "Explain this function"</p>
+                <p>• "What does <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@issue:0</span> mean?"</p>
+                <p>• "Tell me about <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@change:1</span>"</p>
+                <p>• "Show me <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@callstack:0</span>"</p>
+                <p className="mt-2 pt-2 border-t border-light-border dark:border-dark-border">
+                  Type <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@</span> to see all available references
+                </p>
               </div>
             </div>
           </div>
@@ -435,17 +610,23 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
           </div>
         )}
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 relative">
           <textarea
+            ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => handleInputChange(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey && !showMentions) {
                 e.preventDefault();
                 handleSubmit(e);
               }
+              // Close autocomplete on Escape
+              if (e.key === 'Escape' && showMentions) {
+                e.preventDefault();
+                setShowMentions(false);
+              }
             }}
-            placeholder="Ask about the code... (use @file:line to reference files)"
+            placeholder="Ask about the code... (type @ to reference files, issues, changes, etc.)"
             disabled={sendMessage.isPending}
             rows={3}
             className="flex-1 px-4 py-2 rounded-lg resize-none
@@ -456,6 +637,17 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
                      focus:outline-none focus:ring-2 focus:ring-light-accent-primary dark:focus:ring-dark-accent-primary
                      disabled:opacity-50"
           />
+
+          {/* Mention Autocomplete */}
+          {showMentions && (
+            <MentionAutocomplete
+              query={mentionQuery}
+              suggestions={getMentionSuggestions()}
+              onSelect={handleMentionSelect}
+              onClose={() => setShowMentions(false)}
+              position={mentionPosition}
+            />
+          )}
           <button
             type="submit"
             disabled={!input.trim() || sendMessage.isPending}
@@ -469,7 +661,7 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
           </button>
         </div>
         <p className="text-xs text-light-text-muted dark:text-dark-text-muted mt-2">
-          Press Enter to send, Shift+Enter for new line. Use @file:line to reference files.
+          Press Enter to send, Shift+Enter for new line. Type <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@</span> to reference files, issues, changes, impacts, call stacks, and semantic changes.
         </p>
       </form>
     </div>
