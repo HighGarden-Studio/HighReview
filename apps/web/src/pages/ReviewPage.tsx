@@ -127,6 +127,12 @@ export function ReviewPage({
   const [aiReviewData, setAIReviewData] = useState<AIReviewResult | null>(null);
   const [aiReviewLoading, setAIReviewLoading] = useState(false);
   const [aiReviewStep, setAIReviewStep] = useState<AIReviewStep>('preparing');
+  const [aiReviewMetadata, setAIReviewMetadata] = useState<{
+    commitSha: string;
+    options: any;
+    timestamp: number;
+    isOutdated: boolean;
+  } | null>(null);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [fileFilterMode, setFileFilterMode] = useState<'all' | 'changed'>('all');
   const [highlightLine, setHighlightLine] = useState<number | undefined>(undefined);
@@ -479,16 +485,30 @@ export function ReviewPage({
         return;
       }
 
-      // Check if AI review was already performed for this PR
-      const reviewKey = `ai-review-${prInfo.owner}-${prInfo.repo}-${prInfo.prNumber}`;
-      const cachedReview = localStorage.getItem(reviewKey);
+      // Get current HEAD commit SHA from prData
+      const currentHeadSha = prData?.pullRequest?.headRefOid;
+      if (!currentHeadSha) {
+        console.log('[AI Review] Missing HEAD commit SHA, skipping AI review');
+        return;
+      }
 
-      if (cachedReview) {
+      // Generate cache key with commit SHA and options
+      const optionsHash = JSON.stringify(aiReviewOptions || {});
+      const reviewKey = `ai-review-${prInfo.owner}-${prInfo.repo}-${prInfo.prNumber}-${currentHeadSha}-${optionsHash}`;
+      const cachedData = localStorage.getItem(reviewKey);
+
+      if (cachedData) {
         try {
           console.log('[AI Review] Using cached review');
-          const parsedReview = JSON.parse(cachedReview);
-          console.log('[AI Review] Parsed cached review:', parsedReview);
-          setAIReviewData(parsedReview);
+          const cached = JSON.parse(cachedData);
+          console.log('[AI Review] Parsed cached review:', cached);
+          setAIReviewData(cached.review);
+          setAIReviewMetadata({
+            commitSha: cached.commitSha,
+            options: cached.options,
+            timestamp: cached.timestamp,
+            isOutdated: cached.commitSha !== currentHeadSha,
+          });
           setShowAIReview(true);
           console.log('[AI Review] Set showAIReview to true');
           return;
@@ -541,8 +561,27 @@ export function ReviewPage({
         setAIReviewData(result.review);
         setShowAIReview(true);
 
-        // Cache the review result
-        localStorage.setItem(reviewKey, JSON.stringify(result.review));
+        // Get current HEAD commit SHA
+        const currentHeadSha = prData?.pullRequest?.headRefOid;
+
+        // Cache the review result with metadata
+        const cacheData = {
+          review: result.review,
+          commitSha: currentHeadSha,
+          options: aiReviewOptions,
+          timestamp: Date.now(),
+        };
+        const optionsHash = JSON.stringify(aiReviewOptions || {});
+        const cacheKey = `ai-review-${prInfo.owner}-${prInfo.repo}-${prInfo.prNumber}-${currentHeadSha}-${optionsHash}`;
+        localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+
+        // Set metadata
+        setAIReviewMetadata({
+          commitSha: currentHeadSha || '',
+          options: aiReviewOptions,
+          timestamp: Date.now(),
+          isOutdated: false,
+        });
 
         setAIReviewStep('completed');
       } catch (error) {
@@ -597,9 +636,27 @@ export function ReviewPage({
       const result = await response.json();
       setAIReviewData(result.review);
 
-      // Update cached review
-      const reviewKey = `ai-review-${prInfo.owner}-${prInfo.repo}-${prInfo.prNumber}`;
-      localStorage.setItem(reviewKey, JSON.stringify(result.review));
+      // Get current HEAD commit SHA
+      const currentHeadSha = prData?.pullRequest?.headRefOid;
+
+      // Update cached review with metadata
+      const cacheData = {
+        review: result.review,
+        commitSha: currentHeadSha,
+        options: aiReviewOptions,
+        timestamp: Date.now(),
+      };
+      const optionsHash = JSON.stringify(aiReviewOptions || {});
+      const cacheKey = `ai-review-${prInfo.owner}-${prInfo.repo}-${prInfo.prNumber}-${currentHeadSha}-${optionsHash}`;
+      localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+
+      // Set metadata
+      setAIReviewMetadata({
+        commitSha: currentHeadSha || '',
+        options: aiReviewOptions,
+        timestamp: Date.now(),
+        isOutdated: false,
+      });
 
       setAIReviewStep('completed');
     } catch (error) {
@@ -1192,6 +1249,8 @@ export function ReviewPage({
               ) : aiReviewData ? (
                 <EnhancedAIReviewPanel
                   review={aiReviewData}
+                  metadata={aiReviewMetadata}
+                  currentCommitSha={prData?.pullRequest?.headRefOid}
                   onClose={() => setShowAIReview(false)}
                   onRerun={handleReRunAIReview}
                   highlightedItem={highlightedAIReview}

@@ -53,8 +53,17 @@ interface EnhancedAIReviewResult {
   refactorings?: Array<{ type: string; description: string; files: string[] }>;
 }
 
+interface AIReviewMetadata {
+  commitSha: string;
+  options: any;
+  timestamp: number;
+  isOutdated: boolean;
+}
+
 interface EnhancedAIReviewPanelProps {
   review: EnhancedAIReviewResult;
+  metadata?: AIReviewMetadata | null;
+  currentCommitSha?: string;
   onClose: () => void;
   onRerun?: () => void;
   onFileSelect?: (file: string, line?: number, functionName?: string) => void;
@@ -67,6 +76,8 @@ interface EnhancedAIReviewPanelProps {
 
 export function EnhancedAIReviewPanel({
   review,
+  metadata,
+  currentCommitSha,
   onClose,
   onRerun,
   onFileSelect,
@@ -291,36 +302,57 @@ export function EnhancedAIReviewPanel({
   return (
     <div className="h-full flex flex-col bg-light-surface dark:bg-dark-surface border-l border-light-border dark:border-dark-border">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-light-border dark:border-dark-border bg-gradient-to-r from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
-            <span className="text-white text-lg">🤖</span>
+      <div className="flex flex-col px-4 py-3 border-b border-light-border dark:border-dark-border bg-gradient-to-r from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+              <span className="text-white text-lg">🤖</span>
+            </div>
+            <div>
+              <h3 className="text-white font-semibold">AI Code Review</h3>
+              <p className="text-white/80 text-xs">
+                {review.filesReviewed} files • {review.totalIssues} issues
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="text-white font-semibold">AI Code Review</h3>
-            <p className="text-white/80 text-xs">
-              {review.filesReviewed} files • {review.totalIssues} issues
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {onRerun && (
+          <div className="flex items-center gap-2">
+            {onRerun && (
+              <button
+                onClick={onRerun}
+                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors flex items-center gap-2 text-white text-sm font-medium"
+                title="Re-run AI Review"
+              >
+                <span>🔄</span>
+                <span>Re-run</span>
+              </button>
+            )}
             <button
-              onClick={onRerun}
-              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors flex items-center gap-2 text-white text-sm font-medium"
-              title="Re-run AI Review"
+              onClick={onClose}
+              className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 transition-colors flex items-center justify-center text-white"
             >
-              <span>🔄</span>
-              <span>Re-run</span>
+              ✕
             </button>
-          )}
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 transition-colors flex items-center justify-center text-white"
-          >
-            ✕
-          </button>
+          </div>
         </div>
+
+        {/* Outdated Indicator */}
+        {metadata && currentCommitSha && metadata.commitSha !== currentCommitSha && (
+          <div className="mt-2 px-3 py-2 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-start gap-2">
+            <svg className="w-5 h-5 text-amber-300 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <div className="flex-1">
+              <p className="text-white text-sm font-medium">Review is Outdated</p>
+              <p className="text-white/80 text-xs mt-1">
+                This review was based on commit <span className="font-mono">{metadata.commitSha.substring(0, 7)}</span>.
+                Current HEAD is <span className="font-mono">{currentCommitSha.substring(0, 7)}</span>.
+              </p>
+              <p className="text-white/70 text-xs mt-1">
+                Click "Re-run" to analyze the latest changes.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
