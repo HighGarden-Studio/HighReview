@@ -115,27 +115,19 @@ HighReview/
    npm install
    ```
 
-3. **Configure environment**
-   ```bash
-   cp .env.example .env
-   ```
-
-   Edit `.env` file:
-   ```env
-   # GitHub Configuration
-   GITHUB_TOKEN=your_github_token_here
-
-   # AI Provider (choose one)
-   AI_PROVIDER=claude-code  # or 'ollama' or 'lmstudio'
-
-   # Optional: Custom paths
-   HIGHREVIEW_DATA_DIR=~/.highreview
-   ```
-
-4. **Authenticate with GitHub**
+3. **Authenticate with GitHub**
    ```bash
    gh auth login
    ```
+
+   HighReview uses GitHub CLI for authentication - no token configuration needed!
+
+4. **Install AI Provider** (Choose one)
+   - **Claude Code CLI** (Recommended): https://claude.ai/download
+   - **Ollama**: https://ollama.ai
+   - **LM Studio**: https://lmstudio.ai
+
+   You can select your AI provider in the Settings page after starting the app.
 
 ### Usage
 
@@ -215,20 +207,16 @@ The review screen has 4 main panels:
 
 ### AI Provider Configuration
 
-Edit `~/.highreview/config.json`:
+AI providers are automatically detected and can be selected in the Settings page:
 
-```json
-{
-  "aiProvider": "claude-code",
-  "language": "ko",
-  "theme": "dark"
-}
-```
+1. Navigate to Settings (gear icon)
+2. Select your installed AI provider:
+   - **Claude Code CLI** (recommended)
+   - **Ollama** (local inference)
+   - **LM Studio** (local inference)
+3. The selection is automatically saved to `~/.highreview/config.json`
 
-Available providers:
-- `claude-code`: Claude Code CLI (recommended)
-- `ollama`: Local Ollama instance
-- `lmstudio`: LM Studio API
+No environment variables needed - the app detects available providers automatically!
 
 ### Theme
 
@@ -250,13 +238,17 @@ Toggle theme in the top-right corner or press `Cmd/Ctrl + Shift + T`.
 
 ### Environment Variables
 
+All configuration is optional. The app works out of the box with GitHub CLI authentication.
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GITHUB_TOKEN` | GitHub personal access token | - |
-| `AI_PROVIDER` | AI provider to use | `claude-code` |
-| `HIGHREVIEW_DATA_DIR` | Data storage directory | `~/.highreview` |
 | `PORT` | Server port | `8765` |
+| `HIGHREVIEW_DATA_DIR` | Data storage directory | `~/.highreview` |
 | `NODE_ENV` | Environment mode | `development` |
+
+**Note:**
+- No `GITHUB_TOKEN` needed - uses GitHub CLI (`gh`) authentication
+- No `AI_PROVIDER` needed - select in Settings UI
 
 ### Data Storage
 
