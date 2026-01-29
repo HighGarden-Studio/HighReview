@@ -241,7 +241,7 @@ export function HomePage() {
             <h2 className="text-lg font-semibold text-light-text-primary dark:text-dark-text-primary mb-4">
               Quick Actions
             </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <button
                 onClick={() => navigate('/prs')}
                 className="group relative overflow-hidden px-6 py-4 bg-gradient-to-br from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary text-white rounded-lg font-medium hover:shadow-lg transition-all"
@@ -258,6 +258,34 @@ export function HomePage() {
                   <div className="text-left">
                     <div className="font-semibold">View Pull Requests</div>
                     <div className="text-xs opacity-90">Review requested PRs</div>
+                  </div>
+                </div>
+              </button>
+
+              <button
+                onClick={() => navigate('/settings')}
+                className="px-6 py-4 bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary rounded-lg font-medium hover:bg-light-border dark:hover:bg-dark-border transition-colors border border-light-border dark:border-dark-border"
+              >
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                    />
+                  </svg>
+                  <div className="text-left">
+                    <div className="font-semibold">Settings</div>
+                    <div className="text-xs text-light-text-muted dark:text-dark-text-muted">
+                      Configure AI & repositories
+                    </div>
                   </div>
                 </div>
               </button>

@@ -11,6 +11,8 @@ import { fsRoutes } from './routes/fs.routes.js';
 import { lspRoutes } from './routes/lsp.routes.js';
 import { aiRoutes } from './routes/ai.routes.js';
 import { indexRoutes } from './routes/index.routes.js';
+import { repositoriesRoutes } from './routes/repositories.routes.js';
+import { settingsRoutes } from './routes/settings.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -57,6 +59,12 @@ export async function startServer(port: number) {
 
   // Index 라우트 등록
   await fastify.register(indexRoutes);
+
+  // Repositories 라우트 등록
+  await fastify.register(repositoriesRoutes);
+
+  // Settings 라우트 등록
+  await fastify.register(settingsRoutes);
 
   // 프로덕션 모드에서 빌드된 프론트엔드 정적 파일 서빙
   const publicPath = join(__dirname, '..', 'public');
