@@ -1014,9 +1014,6 @@ export function ReviewPage({
         {/* 3-panel resizable layout: File Tree | Editor | Side Panels */}
         <Allotment
             key={`unified-${showChat}-${showAIReview}-${!!aiReviewData}`}
-            onChange={(sizes) => {
-              console.log('[ReviewPage] Panel sizes:', sizes);
-            }}
             className="h-full"
           >
             {/* File Tree Panel - 15% */}
