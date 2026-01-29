@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm run dev:*)",
+      "Bash(lsof:*)",
+      "Bash(ps:*)",
+      "Bash(curl:*)",
+      "Bash(npm install:*)",
+      "Bash(jq:*)",
+      "WebFetch(domain:semanticdiff.com)",
+      "Bash(awk:*)",
+      "Bash(npm run build:*)",
+      "Bash(claude code:*)",
+      "Bash(xargs kill:*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

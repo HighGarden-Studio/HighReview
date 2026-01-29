@@ -1,0 +1,29 @@
+{
+  "name": "highreview",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:cli\" \"npm run dev:web\"",
+    "dev:cli": "npm run dev --workspace=apps/cli",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspaces",
+    "build:cli": "npm run build --workspace=apps/cli",
+    "build:web": "npm run build --workspace=apps/web",
+    "start": "npm run start --workspace=apps/cli",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "format": "npm run format --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "@highreview/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "highreview": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write src"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@fastify/cors": "^10.0.1",
+    "@fastify/static": "^8.0.4",
+    "@fastify/websocket": "^11.2.0",
+    "@octokit/rest": "^21.0.2",
+    "better-sqlite3": "^12.1.0",
+    "commander": "^12.1.0",
+    "dotenv": "^17.2.3",
+    "execa": "^9.5.2",
+    "fastify": "^5.2.2",
+    "typescript-language-server": "^5.1.3",
+    "vscode-languageserver-protocol": "^3.17.5",
+    "vscode-ws-jsonrpc": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.6"
+  }
+}

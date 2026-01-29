@@ -1,0 +1,364 @@
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { PRCard } from '../components/PRCard';
+import { ThemeToggle } from '../components/ThemeToggle';
+import { LanguageSelector } from '../components/LanguageSelector';
+
+export function PRListPage() {
+  const navigate = useNavigate();
+  const [filter, setFilter] = useState<'review-requested' | 'involved'>('review-requested');
+  const [selectedRepo, setSelectedRepo] = useState<string>('all');
+  const [isRepoFilterOpen, setIsRepoFilterOpen] = useState(false);
+
+  const {
+    data: reviewRequestedData,
+    isLoading: loadingReviewRequested,
+    refetch: refetchReviewRequested,
+  } = useQuery({
+    queryKey: ['prs', 'review-requested'],
+    queryFn: async () => {
+      const response = await fetch('/api/prs/review-requested');
+      if (!response.ok) throw new Error('Failed to fetch PRs');
+      return response.json();
+    },
+    enabled: filter === 'review-requested',
+  });
+
+  const {
+    data: involvedData,
+    isLoading: loadingInvolved,
+    refetch: refetchInvolved,
+  } = useQuery({
+    queryKey: ['prs', 'involved'],
+    queryFn: async () => {
+      const response = await fetch('/api/prs/involved');
+      if (!response.ok) throw new Error('Failed to fetch PRs');
+      return response.json();
+    },
+    enabled: filter === 'involved',
+  });
+
+  const { data: authStatus } = useQuery({
+    queryKey: ['authStatus'],
+    queryFn: async () => {
+      const response = await fetch('/api/auth/status');
+      if (!response.ok) throw new Error('Failed to check auth status');
+      return response.json();
+    },
+  });
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      navigate('/login');
+    } catch (error) {
+      console.error('Logout failed:', error);
+    }
+  };
+
+  const handleRefresh = () => {
+    if (filter === 'review-requested') {
+      refetchReviewRequested();
+    } else {
+      refetchInvolved();
+    }
+  };
+
+  const currentData = filter === 'review-requested' ? reviewRequestedData : involvedData;
+  const isLoading = filter === 'review-requested' ? loadingReviewRequested : loadingInvolved;
+
+  // Get unique repositories and their counts
+  const repositories = currentData?.pullRequests
+    ? currentData.pullRequests.reduce((acc: { [key: string]: number }, pr: any) => {
+        acc[pr.repository] = (acc[pr.repository] || 0) + 1;
+        return acc;
+      }, {})
+    : {};
+
+  const sortedRepos = Object.entries(repositories).sort((a, b) => b[1] - a[1]);
+
+  // Filter PRs by selected repository
+  const filteredPRs = currentData?.pullRequests.filter((pr: any) =>
+    selectedRepo === 'all' || pr.repository === selectedRepo
+  ) || [];
+
+  return (
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg">
+      {/* Header */}
+      <header className="border-b border-light-border dark:border-dark-border bg-light-surface/80 dark:bg-dark-surface/80 backdrop-blur-sm sticky top-0 z-50">
+        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div
+              className="flex items-center gap-3 cursor-pointer"
+              onClick={() => navigate('/')}
+            >
+              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary flex items-center justify-center text-white font-bold text-lg shadow-lg">
+                H
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-light-text-primary dark:text-dark-text-primary">
+                  HighReview
+                </h1>
+                <p className="text-xs text-light-text-muted dark:text-dark-text-muted">
+                  Pull Requests
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {authStatus?.authenticated && (
+              <div className="flex items-center gap-3">
+                <div className="text-right">
+                  <p className="text-sm font-medium text-light-text-primary dark:text-dark-text-primary">
+                    {authStatus.user.username}
+                  </p>
+                  <button
+                    onClick={handleLogout}
+                    className="text-xs text-light-text-muted dark:text-dark-text-muted hover:text-light-accent-error dark:hover:text-dark-accent-error"
+                  >
+                    Logout
+                  </button>
+                </div>
+              </div>
+            )}
+            <LanguageSelector />
+            <ThemeToggle />
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="container mx-auto px-4 py-8">
+        {/* Filter Tabs */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setFilter('review-requested')}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                filter === 'review-requested'
+                  ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
+                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+              }`}
+            >
+              Review Requested
+              {reviewRequestedData && (
+                <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
+                  {reviewRequestedData.count}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setFilter('involved')}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                filter === 'involved'
+                  ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
+                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+              }`}
+            >
+              Involved
+              {involvedData && (
+                <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
+                  {involvedData.count}
+                </span>
+              )}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Repository Filter */}
+            {sortedRepos.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => setIsRepoFilterOpen(!isRepoFilterOpen)}
+                  className="px-4 py-2 rounded-lg font-medium bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors border border-light-border dark:border-dark-border flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3z" clipRule="evenodd" />
+                  </svg>
+                  <span className="text-sm">
+                    {selectedRepo === 'all' ? 'All Repositories' : selectedRepo.split('/').pop()}
+                  </span>
+                  <span className="px-2 py-0.5 text-xs rounded-full bg-light-surface-elevated dark:bg-dark-surface-elevated border border-light-border dark:border-dark-border">
+                    {selectedRepo === 'all' ? currentData?.count || 0 : repositories[selectedRepo] || 0}
+                  </span>
+                  <svg className={`w-4 h-4 transition-transform ${isRepoFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {isRepoFilterOpen && (
+                  <>
+                    {/* Backdrop */}
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setIsRepoFilterOpen(false)}
+                    />
+
+                    {/* Dropdown */}
+                    <div className="absolute right-0 mt-2 w-80 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-xl z-20 max-h-96 overflow-y-auto">
+                      <div className="p-2">
+                        {/* All Repositories Option */}
+                        <button
+                          onClick={() => {
+                            setSelectedRepo('all');
+                            setIsRepoFilterOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 rounded-md transition-colors flex items-center justify-between ${
+                            selectedRepo === 'all'
+                              ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
+                              : 'text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
+                            </svg>
+                            <span className="font-medium text-sm">All Repositories</span>
+                          </div>
+                          <span className={`px-2 py-0.5 text-xs rounded-full font-semibold ${
+                            selectedRepo === 'all'
+                              ? 'bg-white/20'
+                              : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
+                          }`}>
+                            {currentData?.count || 0}
+                          </span>
+                        </button>
+
+                        {/* Separator */}
+                        <div className="my-2 border-t border-light-border dark:border-dark-border" />
+
+                        {/* Individual Repositories */}
+                        {sortedRepos.map(([repo, count]) => (
+                          <button
+                            key={repo}
+                            onClick={() => {
+                              setSelectedRepo(repo);
+                              setIsRepoFilterOpen(false);
+                            }}
+                            className={`w-full text-left px-3 py-2 rounded-md transition-colors flex items-center justify-between ${
+                              selectedRepo === repo
+                                ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
+                                : 'text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
+                              </svg>
+                              <span className="font-medium text-sm truncate">{repo}</span>
+                            </div>
+                            <span className={`px-2 py-0.5 text-xs rounded-full font-semibold flex-shrink-0 ml-2 ${
+                              selectedRepo === repo
+                                ? 'bg-white/20'
+                                : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
+                            }`}>
+                              {count}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Refresh Button */}
+            <button
+              onClick={handleRefresh}
+              disabled={isLoading}
+              className="px-4 py-2 rounded-lg font-medium bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors disabled:opacity-50 border border-light-border dark:border-dark-border"
+            >
+              <svg
+                className={`w-4 h-4 inline-block mr-2 ${isLoading ? 'animate-spin' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {/* PR List */}
+        {isLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="text-center">
+              <div className="w-12 h-12 border-4 border-light-accent-primary dark:border-dark-accent-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+              <p className="text-light-text-secondary dark:text-dark-text-secondary">
+                Loading pull requests...
+              </p>
+            </div>
+          </div>
+        ) : filteredPRs.length > 0 ? (
+          <div className="space-y-4">
+            {filteredPRs.map((pr: any) => (
+              <PRCard key={`${pr.repository}-${pr.number}`} pr={pr} />
+            ))}
+          </div>
+        ) : currentData && currentData.pullRequests.length > 0 ? (
+          <div className="bg-light-surface dark:bg-dark-surface rounded-lg border border-light-border dark:border-dark-border p-12 text-center">
+            <svg
+              className="w-16 h-16 mx-auto mb-4 text-light-text-muted dark:text-dark-text-muted"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z"
+              />
+            </svg>
+            <h3 className="text-xl font-semibold text-light-text-primary dark:text-dark-text-primary mb-2">
+              No pull requests in this repository
+            </h3>
+            <p className="text-light-text-secondary dark:text-dark-text-secondary mb-4">
+              Try selecting a different repository from the filter.
+            </p>
+            <button
+              onClick={() => setSelectedRepo('all')}
+              className="px-4 py-2 bg-light-accent-primary dark:bg-dark-accent-primary text-white rounded-lg font-medium hover:shadow-lg transition-all"
+            >
+              Show All Repositories
+            </button>
+          </div>
+        ) : (
+          <div className="bg-light-surface dark:bg-dark-surface rounded-lg border border-light-border dark:border-dark-border p-12 text-center">
+            <svg
+              className="w-16 h-16 mx-auto mb-4 text-light-text-muted dark:text-dark-text-muted"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
+            </svg>
+            <h3 className="text-xl font-semibold text-light-text-primary dark:text-dark-text-primary mb-2">
+              No pull requests found
+            </h3>
+            <p className="text-light-text-secondary dark:text-dark-text-secondary">
+              {filter === 'review-requested'
+                ? 'You have no pending review requests.'
+                : 'You are not involved in any open pull requests.'}
+            </p>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
