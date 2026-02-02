@@ -1,10 +1,14 @@
-import { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import mermaid from 'mermaid';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-typescript';
 import 'prismjs/components/prism-javascript';
@@ -21,6 +25,7 @@ import { ThemeToggle } from '../components/ThemeToggle';
 import { LanguageSelector } from '../components/LanguageSelector';
 import { Toast } from '../components/Toast';
 import { AIReviewOptionsModal, type AIReviewOptions } from '../components/AIReviewOptionsModal';
+import { CommentEditor } from '../components/CommentEditor';
 import { useTheme } from '../contexts/ThemeContext';
 
 type Tab = 'conversation' | 'commits' | 'checks' | 'files';
@@ -58,13 +63,14 @@ function getLanguageFromPath(filePath: string): string {
 function extractLineNumbers(diffHunk: string): { startLine: number; endLine: number } | null {
   if (!diffHunk) return null;
 
-  // Parse the diff header like "@@ -44,4 +44,4 @@"
-  const headerMatch = diffHunk.match(/@@ -(\d+),?\d* \+(\d+),?\d* @@/);
+  // Parse the diff header like "@@ -44,4 +44,12 @@" or "@@ -44 +44,12 @@"
+  // The format is: @@ -oldStart,oldLines +newStart,newLines @@
+  const headerMatch = diffHunk.match(/@@ -\d+,?\d* \+(\d+)(?:,(\d+))? @@/);
   if (!headerMatch) return null;
 
-  const startLine = parseInt(headerMatch[2], 10);
-  const lines = diffHunk.split('\n').slice(1).filter(line => line.startsWith('+') || line.startsWith(' '));
-  const endLine = startLine + lines.length - 1;
+  const startLine = parseInt(headerMatch[1], 10);
+  const lineCount = headerMatch[2] ? parseInt(headerMatch[2], 10) : 1;
+  const endLine = startLine + lineCount - 1;
 
   return { startLine, endLine };
 }
@@ -270,6 +276,36 @@ function organizeCommentsIntoThreads(comments: any[]): CommentThread[] {
   }));
 }
 
+// Mermaid diagram component
+function MermaidDiagram({ chart }: { chart: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [svg, setSvg] = useState<string>('');
+
+  useEffect(() => {
+    if (ref.current && chart) {
+      const renderDiagram = async () => {
+        try {
+          const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
+          const { svg } = await mermaid.render(id, chart);
+          setSvg(svg);
+        } catch (error) {
+          console.error('Mermaid rendering error:', error);
+          setSvg(`<pre class="text-red-500">Error rendering diagram: ${error}</pre>`);
+        }
+      };
+      renderDiagram();
+    }
+  }, [chart]);
+
+  return (
+    <div
+      ref={ref}
+      className="my-4 flex justify-center"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+}
+
 export function PRDetailPage() {
   const { owner, repo, number } = useParams<{ owner: string; repo: string; number: string }>();
   const navigate = useNavigate();
@@ -283,6 +319,44 @@ export function PRDetailPage() {
 
   // Detect current theme for syntax highlighting
   const isDarkMode = theme === 'dark';
+
+  // Check if AI Review exists for this PR via API
+  const { data: aiReviewCheck } = useQuery({
+    queryKey: ['ai-review-check', owner, repo, number],
+    queryFn: async () => {
+      if (!owner || !repo || !number) {
+        return { exists: false };
+      }
+      try {
+        const response = await fetch(`/api/prs/${owner}/${repo}/${number}/ai-review/check`);
+        if (!response.ok) {
+          console.error('[PRDetailPage] Failed to check AI review:', response.status);
+          return { exists: false };
+        }
+        const data = await response.json();
+        console.log('[PRDetailPage] AI review check result:', data);
+        return data;
+      } catch (error) {
+        console.error('[PRDetailPage] Error checking AI review:', error);
+        return { exists: false };
+      }
+    },
+    enabled: !!(owner && repo && number),
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    retry: 1,
+  });
+
+  const hasAIReview = aiReviewCheck?.exists || false;
+
+  // Initialize Mermaid with theme
+  useEffect(() => {
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: isDarkMode ? 'dark' : 'default',
+      securityLevel: 'loose',
+      fontSize: 14,
+    });
+  }, [isDarkMode]);
 
   const { data: prData, isLoading } = useQuery({
     queryKey: ['pr', owner, repo, number],
@@ -311,33 +385,75 @@ export function PRDetailPage() {
       console.log('[Conversation] Loaded conversation data:', data);
       console.log('[Conversation] Data structure keys:', Object.keys(data));
 
-      // Check if data uses 'conversation' or 'timeline' key
-      const timelineItems = data.timeline || data.conversation || [];
+      // Extract conversation items from timelineItems and reviewThreads
+      const timelineItems = data.timelineItems || [];
+      const reviewThreads = data.reviewThreads || [];
       console.log('[Conversation] Timeline items count:', timelineItems.length);
+      console.log('[Conversation] Review threads count:', reviewThreads.length);
 
-      // Log thread comment counts
+      // Process timeline items and review threads
+      const conversationItems: any[] = [];
+
+      // Add timeline items (IssueComment and PullRequestReview)
       timelineItems.forEach((item: any, index: number) => {
         console.log(`[Timeline ${index}] Type: ${item.__typename}, ID: ${item.id}`);
-        if (item.__typename === 'PullRequestReviewThread' && item.comments?.nodes) {
-          console.log(`[Thread ${index}] ID: ${item.id}, Total comments: ${item.comments.nodes.length}`);
-        }
-        if (item.__typename === 'PullRequestReview' && item.comments?.nodes) {
-          console.log(`[Review ${index}] ID: ${item.id}, Total comments: ${item.comments.nodes.length}`);
+
+        if (item.__typename === 'PullRequestReview') {
+          console.log(`[Review ${index}] ID: ${item.id}, Has body: ${!!item.body}, Total comments: ${item.comments?.nodes?.length || 0}`);
+          conversationItems.push(item);
+        } else if (item.__typename === 'IssueComment') {
+          console.log(`[IssueComment ${index}] ID: ${item.id}, Author: ${item.author?.login}`);
+          conversationItems.push(item);
         }
       });
-      return data;
+
+      // Add review threads (file-specific comment threads)
+      reviewThreads.forEach((thread: any, index: number) => {
+        const commentCount = thread.comments?.nodes?.length || 0;
+        console.log(`[ReviewThread ${index}] ID: ${thread.id}, Comments: ${commentCount}, Resolved: ${thread.isResolved}`);
+        if (commentCount > 0) {
+          conversationItems.push(thread);
+        }
+      });
+
+      // Sort conversation items chronologically by createdAt timestamp
+      conversationItems.sort((a, b) => {
+        const aTime = new Date(a.createdAt || a.comments?.nodes?.[0]?.createdAt || 0).getTime();
+        const bTime = new Date(b.createdAt || b.comments?.nodes?.[0]?.createdAt || 0).getTime();
+        return aTime - bTime;
+      });
+
+      console.log('[Conversation] Sorted conversation items chronologically');
+
+      // Calculate total comment count (including all replies)
+      let totalCommentCount = 0;
+      conversationItems.forEach((item) => {
+        if (item.__typename === 'IssueComment') {
+          totalCommentCount += 1;
+        } else if (item.__typename === 'PullRequestReview') {
+          // Count review body as 1 if it exists
+          // Note: inline comments are NOT counted here as they're already in PullRequestReviewThread
+          if (item.body) totalCommentCount += 1;
+        } else if (item.__typename === 'PullRequestReviewThread') {
+          // Count all comments in thread (including replies)
+          if (item.comments?.nodes) {
+            totalCommentCount += item.comments.nodes.length;
+          }
+        }
+      });
+
+      console.log('[Conversation] Total conversation items:', conversationItems.length);
+      console.log('[Conversation] Total comment count (including replies):', totalCommentCount);
+
+      // Return data with conversation array for rendering
+      return {
+        ...data,
+        conversation: conversationItems,
+        totalCommentCount,
+      };
     },
     enabled: activeTab === 'conversation' && !!owner && !!repo && !!number,
   });
-
-  const handleLogout = async () => {
-    try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      navigate('/login');
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
-  };
 
   const handleShowAIOptionsModal = (initialFilePath?: string, commentInfo?: any) => {
     setPendingReviewData({ initialFilePath, commentInfo });
@@ -389,9 +505,21 @@ export function PRDetailPage() {
   };
 
   const handleFilePathClick = async (filePath: string, comment: any) => {
+    console.log('[PRDetail] Comment clicked:', {
+      path: comment.path,
+      line: comment.line,
+      originalLine: comment.originalLine,
+      position: comment.position,
+      diffHunk: comment.diffHunk?.substring(0, 100),
+    });
+
     handleShowAIOptionsModal(filePath, {
       body: comment.body,
       line: comment.line,
+      originalLine: comment.originalLine,
+      position: comment.position,
+      path: comment.path,
+      diffHunk: comment.diffHunk,
       author: comment.author,
       createdAt: comment.createdAt,
     });
@@ -409,9 +537,12 @@ export function PRDetailPage() {
     if (!owner || !repo || !currentUser) return;
 
     try {
+      // Convert emoji to GitHub reaction content format
+      const githubReactionContent = emojiToReactionContent(reactionContent);
+
       // Check if current user already reacted with this emoji
       const userHasReacted = currentReactions.nodes?.some(
-        (r: any) => r.content === reactionContent && r.user?.login === currentUser
+        (r: any) => r.content === githubReactionContent && r.user?.login === currentUser
       );
 
       if (userHasReacted) {
@@ -419,7 +550,7 @@ export function PRDetailPage() {
         await fetch(`/api/prs/${owner}/${repo}/reactions/remove`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ commentId, reactionContent }),
+          body: JSON.stringify({ commentId, reactionContent: githubReactionContent }),
         });
         setToast({ message: 'Reaction removed', type: 'success' });
       } else {
@@ -427,13 +558,14 @@ export function PRDetailPage() {
         await fetch(`/api/prs/${owner}/${repo}/reactions/add`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ commentId, reactionContent }),
+          body: JSON.stringify({ commentId, reactionContent: githubReactionContent }),
         });
         setToast({ message: 'Reaction added', type: 'success' });
       }
 
-      // Refetch conversation data to update reactions
+      // Refetch conversation data and PR data to update reactions
       queryClient.invalidateQueries({ queryKey: ['pr-conversation', owner, repo, number] });
+      queryClient.invalidateQueries({ queryKey: ['pr', owner, repo, number] });
     } catch (error: any) {
       console.error('Failed to toggle reaction:', error);
       setToast({ message: 'Failed to update reaction', type: 'error' });
@@ -471,6 +603,12 @@ export function PRDetailPage() {
     { emoji: '🚀', content: 'ROCKET' },
     { emoji: '👀', content: 'EYES' },
   ];
+
+  // Convert emoji to GitHub reaction content
+  const emojiToReactionContent = (emoji: string): string => {
+    const reaction = availableReactions.find(r => r.emoji === emoji);
+    return reaction?.content || emoji;
+  };
 
   // Comment writing
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
@@ -604,12 +742,6 @@ export function PRDetailPage() {
                   <p className="text-sm font-medium text-light-text-primary dark:text-dark-text-primary">
                     {authStatus.user.username}
                   </p>
-                  <button
-                    onClick={handleLogout}
-                    className="text-xs text-light-text-muted dark:text-dark-text-muted hover:text-light-accent-error dark:hover:text-dark-accent-error"
-                  >
-                    Logout
-                  </button>
                 </div>
               </div>
             )}
@@ -633,60 +765,117 @@ export function PRDetailPage() {
             Back to PR List
           </button>
 
-          {/* PR Header */}
-          <div className="bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg p-6 mb-6">
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex-1">
-                <div className="flex items-center gap-3 mb-2">
-                  <h1 className="text-2xl font-bold text-light-text-primary dark:text-dark-text-primary">
-                    {prData.pullRequest.title}
-                  </h1>
-                  <span
-                    className={`px-3 py-1 text-xs font-medium rounded-full ${
-                      prData.pullRequest.state === 'OPEN'
-                        ? 'bg-light-accent-success/10 text-light-accent-success dark:bg-dark-accent-success/10 dark:text-dark-accent-success'
-                        : 'bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-muted dark:text-dark-text-muted'
-                    }`}
-                  >
-                    {prData.pullRequest.state === 'OPEN' ? 'Open' : 'Closed'}
-                  </span>
+          {/* PR Header Card */}
+          <div className="bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-md mb-4 overflow-hidden">
+            {/* Header Section */}
+            <div className="bg-light-surface-elevated dark:bg-dark-surface-elevated border-b border-light-border dark:border-dark-border p-6">
+              <div className="flex gap-4">
+                {/* Left Section: 90% */}
+                <div className="flex-1">
+                  {/* First Row: PR Title + Author Info */}
+                  <div className="mb-4">
+                    <h1 className="text-2xl font-bold text-light-text-primary dark:text-dark-text-primary mb-2">
+                      {prData.pullRequest.title}
+                    </h1>
+                    <div className="flex items-center gap-4 text-sm text-light-text-muted dark:text-dark-text-muted">
+                      <span className="font-medium">
+                        {owner}/{repo} #{number}
+                      </span>
+                      <span>•</span>
+                      <span>
+                        <span className="font-medium text-light-text-secondary dark:text-dark-text-secondary">{prData.pullRequest.author}</span>
+                        {' '}wants to merge into{' '}
+                        <span className="font-medium text-light-text-secondary dark:text-dark-text-secondary">{prData.pullRequest.baseRefName}</span>
+                      </span>
+                      {prData.pullRequest.createdAt && (
+                        <>
+                          <span>•</span>
+                          <span className="flex items-center gap-1.5">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            Created {new Date(prData.pullRequest.createdAt).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Second Row: View on GitHub + Status Badges */}
+                  <div className="flex items-center gap-3">
+                    <a
+                      href={prData.pullRequest.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-white dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary border border-light-border dark:border-dark-border hover:bg-gray-50 dark:hover:bg-dark-border transition-colors"
+                      title="View on GitHub"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 0C4.477 0 0 4.484 0 10.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0110 4.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.203 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.942.359.31.678.921.678 1.856 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0020 10.017C20 4.484 15.522 0 10 0z" clipRule="evenodd" />
+                      </svg>
+                      View on GitHub
+                    </a>
+                    <span
+                      className={`px-3 py-1 text-xs font-medium rounded-full ${
+                        prData.pullRequest.state === 'OPEN'
+                          ? 'bg-light-accent-success/10 text-light-accent-success dark:bg-dark-accent-success/10 dark:text-dark-accent-success border border-light-accent-success/20 dark:border-dark-accent-success/20'
+                          : 'bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-muted dark:text-dark-text-muted border border-light-border dark:border-dark-border'
+                      }`}
+                    >
+                      {prData.pullRequest.state === 'OPEN' ? 'Open' : 'Closed'}
+                    </span>
+                    {hasAIReview && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-gradient-to-r from-purple-500/10 to-blue-500/10 dark:from-purple-400/10 dark:to-blue-400/10 text-purple-600 dark:text-purple-400 border border-purple-500/30 dark:border-purple-400/30" title="AI Review completed">
+                        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M13 7H7v6h6V7z" />
+                          <path fillRule="evenodd" d="M7 2a1 1 0 012 0v1h2V2a1 1 0 112 0v1h2a2 2 0 012 2v2h1a1 1 0 110 2h-1v2h1a1 1 0 110 2h-1v2a2 2 0 01-2 2h-2v1a1 1 0 11-2 0v-1H9v1a1 1 0 11-2 0v-1H5a2 2 0 01-2-2v-2H2a1 1 0 110-2h1V9H2a1 1 0 010-2h1V5a2 2 0 012-2h2V2zM5 5h10v10H5V5z" clipRule="evenodd" />
+                        </svg>
+                        AI Reviewed
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-4 text-sm text-light-text-muted dark:text-dark-text-muted">
-                  <span>
-                    {owner}/{repo} #{number}
-                  </span>
-                  <span>•</span>
-                  <span>{prData.pullRequest.author} wants to merge into {prData.pullRequest.baseRefName}</span>
+
+                {/* Right Section: 10% - Start Review Button (Full Height) */}
+                <div className="w-[10%] min-w-[120px]">
+                  <button
+                    onClick={() => handleShowAIOptionsModal()}
+                    disabled={isSettingUpReview}
+                    className="w-full h-full px-4 py-3 bg-gradient-to-br from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary text-white rounded-lg font-medium hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex flex-col items-center justify-center gap-2"
+                  >
+                    {isSettingUpReview && (
+                      <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    )}
+                    <span className="text-sm whitespace-nowrap">{isSettingUpReview ? 'Setting up...' : 'Start Review'}</span>
+                  </button>
                 </div>
               </div>
-              <button
-                onClick={() => handleShowAIOptionsModal()}
-                disabled={isSettingUpReview}
-                className="px-6 py-3 bg-gradient-to-br from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary text-white rounded-lg font-medium hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                {isSettingUpReview && (
-                  <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                )}
-                {isSettingUpReview ? 'Setting up...' : 'Start Review'}
-              </button>
             </div>
 
+            {/* Body Section */}
             {prData.pullRequest.body && (
-              <div className="mt-4 pt-4 border-t border-light-border dark:border-dark-border">
-                <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-light-text-primary dark:prose-headings:text-dark-text-primary prose-p:text-light-text-secondary dark:prose-p:text-dark-text-secondary prose-a:text-light-accent-primary dark:prose-a:text-dark-accent-primary prose-strong:text-light-text-primary dark:prose-strong:text-dark-text-primary prose-code:text-light-accent-secondary dark:prose-code:text-dark-accent-secondary prose-pre:bg-light-surface-elevated dark:prose-pre:bg-dark-surface-elevated prose-li:text-light-text-secondary dark:prose-li:text-dark-text-secondary">
+              <div className="p-6">
+                <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-light-text-primary dark:prose-headings:text-dark-text-primary prose-p:text-light-text-primary dark:prose-p:text-dark-text-primary prose-a:text-light-accent-primary dark:prose-a:text-dark-accent-primary prose-strong:text-light-text-primary dark:prose-strong:text-dark-text-primary prose-code:text-light-accent-secondary dark:prose-code:text-dark-accent-secondary prose-pre:bg-light-surface-elevated dark:prose-pre:bg-dark-surface-elevated prose-li:text-light-text-primary dark:prose-li:text-dark-text-primary">
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
+                    remarkPlugins={[remarkGfm, remarkBreaks]}
+                    rehypePlugins={[rehypeRaw, rehypeSanitize]}
                     components={{
                       h1: ({node, ...props}) => <h1 className="text-2xl font-bold mb-4 text-light-text-primary dark:text-dark-text-primary" {...props} />,
-                      h2: ({node, ...props}) => <h2 className="text-xl font-bold mb-3 text-light-text-primary dark:text-dark-text-primary" {...props} />,
+                      h2: ({node, ...props}) => <h2 className="text-xl font-bold mb-3 pb-2 border-b border-light-border dark:border-dark-border text-light-text-primary dark:text-dark-text-primary" {...props} />,
                       h3: ({node, ...props}) => <h3 className="text-lg font-bold mb-2 text-light-text-primary dark:text-dark-text-primary" {...props} />,
                       h4: ({node, ...props}) => <h4 className="text-base font-bold mb-2 text-light-text-primary dark:text-dark-text-primary" {...props} />,
                       h5: ({node, ...props}) => <h5 className="text-sm font-bold mb-1 text-light-text-primary dark:text-dark-text-primary" {...props} />,
                       h6: ({node, ...props}) => <h6 className="text-xs font-bold mb-1 text-light-text-primary dark:text-dark-text-primary" {...props} />,
-                      p: ({node, ...props}) => <p className="mb-4 leading-relaxed text-light-text-primary dark:text-dark-text-primary" {...props} />,
+                      p: ({node, ...props}) => <p className="mb-4 leading-normal text-light-text-primary dark:text-dark-text-primary" {...props} />,
                       a: ({node, ...props}) => <a className="text-light-accent-primary dark:text-dark-accent-primary hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
                       strong: ({node, children, ...props}) => {
                         const text = typeof children === 'string' ? children : String(children);
@@ -704,11 +893,20 @@ export function PRDetailPage() {
                         const match = /language-(\w+)/.exec(className || '');
                         const language = match ? match[1] : 'text';
 
-                        return inline ? (
-                          <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
-                            {children}
-                          </code>
-                        ) : (
+                        if (inline) {
+                          return (
+                            <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
+                              {children}
+                            </code>
+                          );
+                        }
+
+                        // Handle Mermaid diagrams
+                        if (language === 'mermaid') {
+                          return <MermaidDiagram chart={String(children)} />;
+                        }
+
+                        return (
                           <SyntaxHighlighter
                             style={isDarkMode ? oneDark : oneLight}
                             language={language}
@@ -718,29 +916,169 @@ export function PRDetailPage() {
                               borderRadius: '0.5rem',
                               fontSize: '0.875rem',
                             }}
-                            {...props}
                           >
                             {String(children).replace(/\n$/, '')}
                           </SyntaxHighlighter>
                         );
                       },
-                      pre: ({node, ...props}) => <pre className="mb-4 rounded-lg overflow-hidden" {...props} />,
-                      ul: ({node, ...props}) => <ul className="list-disc list-inside mb-4 space-y-1 text-light-text-primary dark:text-dark-text-primary" {...props} />,
-                      ol: ({node, ...props}) => <ol className="list-decimal list-inside mb-4 space-y-1 text-light-text-primary dark:text-dark-text-primary" {...props} />,
-                      li: ({node, ...props}) => <li className="text-light-text-primary dark:text-dark-text-primary" {...props} />,
-                      blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-4 italic my-4 text-light-text-primary dark:text-dark-text-primary" {...props} />,
+                      pre: ({ children }) => <div className="my-4">{children}</div>,
+                      ul: ({node, ...props}) => <ul className="list-disc ml-1.5 mb-4 space-y-1 text-light-text-primary dark:text-dark-text-primary marker:text-light-text-primary dark:marker:text-dark-text-primary [&_ul]:list-[circle] [&_ul]:ml-1.5 [&_ul_ul]:list-[square] [&_ul_ul]:ml-1.5" {...props} />,
+                      ol: ({node, ...props}) => <ol className="list-decimal ml-1.5 mb-4 space-y-1 text-light-text-primary dark:text-dark-text-primary marker:text-light-text-primary dark:marker:text-dark-text-primary [&_ol]:ml-1.5" {...props} />,
+                      li: ({node, children, ...props}) => {
+                        // Check if this is a task list item
+                        const className = node?.properties?.className;
+                        const hasCheckbox = Array.isArray(className) ? className.includes('task-list-item') : typeof className === 'string' && className.includes('task-list-item');
+                        if (hasCheckbox) {
+                          return (
+                            <li className="flex items-center gap-2 text-light-text-primary dark:text-dark-text-primary list-none pl-0" {...props}>
+                              {children}
+                            </li>
+                          );
+                        }
+                        return <li className="text-light-text-primary dark:text-dark-text-primary pl-0" {...props}>{children}</li>;
+                      },
+                      input: ({node, ...props}) => {
+                        // Style checkboxes in task lists
+                        if (props.type === 'checkbox') {
+                          return (
+                            <input
+                              type="checkbox"
+                              disabled
+                              className="mr-2 h-4 w-4 rounded border-light-border dark:border-dark-border"
+                              {...props}
+                            />
+                          );
+                        }
+                        return <input {...props} />;
+                      },
+                      blockquote: ({node, children, ...props}) => {
+                        // Check if this is a GitHub alert/admonition
+                        const childrenText = String(children);
+                        const alertMatch = childrenText.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/);
+
+                        if (alertMatch) {
+                          const alertType = alertMatch[1].toLowerCase();
+                          const alertStyles = {
+                            note: 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-900 dark:text-blue-100',
+                            tip: 'border-green-500 bg-green-50 dark:bg-green-900/20 text-green-900 dark:text-green-100',
+                            important: 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-900 dark:text-purple-100',
+                            warning: 'border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-900 dark:text-yellow-100',
+                            caution: 'border-red-500 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-100',
+                          };
+                          const alertIcons = {
+                            note: '💡',
+                            tip: '✅',
+                            important: '⚠️',
+                            warning: '⚠️',
+                            caution: '🚫',
+                          };
+                          const style = alertStyles[alertType as keyof typeof alertStyles] || alertStyles.note;
+                          const icon = alertIcons[alertType as keyof typeof alertIcons] || '📝';
+
+                          return (
+                            <div className={`border-l-4 ${style} p-4 rounded-r-lg my-4`}>
+                              <div className="flex items-start gap-2">
+                                <span className="text-xl flex-shrink-0">{icon}</span>
+                                <div className="flex-1">
+                                  <div className="font-bold uppercase text-sm mb-1">{alertType}</div>
+                                  <div className="not-italic">{children}</div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        return <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-4 italic my-4 text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</blockquote>;
+                      },
                       hr: ({node, ...props}) => <hr className="my-6 border-light-border dark:border-dark-border" {...props} />,
-                      table: ({node, ...props}) => <table className="w-full border-collapse mb-4" {...props} />,
+                      table: ({node, ...props}) => (
+                        <div className="overflow-x-auto my-4">
+                          <table className="min-w-full border border-light-border dark:border-dark-border rounded-lg" {...props} />
+                        </div>
+                      ),
                       thead: ({node, ...props}) => <thead className="bg-light-surface-elevated dark:bg-dark-surface-elevated" {...props} />,
-                      tbody: ({node, ...props}) => <tbody {...props} />,
-                      tr: ({node, ...props}) => <tr className="border-b border-light-border dark:border-dark-border" {...props} />,
-                      th: ({node, ...props}) => <th className="px-4 py-2 text-left font-bold text-light-text-primary dark:text-dark-text-primary" {...props} />,
-                      td: ({node, ...props}) => <td className="px-4 py-2 text-light-text-primary dark:text-dark-text-primary" {...props} />,
+                      tbody: ({node, ...props}) => <tbody className="divide-y divide-light-border dark:divide-dark-border" {...props} />,
+                      tr: ({node, ...props}) => <tr className="hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors" {...props} />,
+                      th: ({node, ...props}) => <th className="px-4 py-3 text-left font-semibold text-sm text-light-text-primary dark:text-dark-text-primary border-b-2 border-light-border dark:border-dark-border" {...props} />,
+                      td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-light-text-primary dark:text-dark-text-primary" {...props} />,
                     }}
                   >
                     {processMentions(prData.pullRequest.body)}
                   </ReactMarkdown>
                 </div>
+
+                {/* PR Body Reactions */}
+                {prData.pullRequest.reactions && (
+                  <div className="px-6 pb-6">
+                    <div className="flex items-center gap-2 flex-wrap border-t border-light-border dark:border-dark-border pt-4">
+                      {(() => {
+                        const reactions = groupReactions(prData.pullRequest.reactions);
+                        return (
+                          <>
+                            {reactions.map((reaction, idx) => {
+                              // Find the original GitHub content for this emoji
+                              const originalContent = prData.pullRequest.reactions?.nodes?.find(
+                                (r: any) => reactionToEmoji(r.content) === reaction.emoji
+                              )?.content;
+                              const userHasReacted = prData.pullRequest.reactions?.nodes?.some(
+                                (r: any) => reactionToEmoji(r.content) === reaction.emoji && r.user?.login === currentUser
+                              );
+                              return (
+                                <button
+                                  key={idx}
+                                  onClick={() => handleReactionClick(prData.pullRequest.id, reaction.emoji, prData.pullRequest.reactions)}
+                                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-full transition-colors ${
+                                    userHasReacted
+                                      ? 'border-light-accent-primary dark:border-dark-accent-primary bg-light-accent-primary/10 dark:bg-dark-accent-primary/10'
+                                      : 'border-light-border dark:border-dark-border hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+                                  }`}
+                                  title={reaction.users.join(', ')}
+                                >
+                                  <span>{reaction.emoji}</span>
+                                  <span className="text-light-text-secondary dark:text-dark-text-secondary font-medium">{reaction.count}</span>
+                                </button>
+                              );
+                            })}
+
+                            {/* Add Reaction Button */}
+                            <div className="relative">
+                              <button
+                                onClick={() => setReactionPickerOpen(reactionPickerOpen === 'pr-body' ? null : 'pr-body')}
+                                className="flex items-center gap-1 px-3 py-1.5 text-sm border border-light-border dark:border-dark-border rounded-full hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors"
+                              >
+                                <span>😊</span>
+                                <span className="text-light-text-secondary dark:text-dark-text-secondary">+</span>
+                              </button>
+
+                              {reactionPickerOpen === 'pr-body' && (
+                                <>
+                                  <div
+                                    className="fixed inset-0 z-10"
+                                    onClick={() => setReactionPickerOpen(null)}
+                                  />
+                                  <div className="absolute left-0 bottom-full mb-2 p-2 bg-light-surface dark:bg-dark-surface rounded-lg shadow-xl border border-light-border dark:border-dark-border z-20 flex gap-1">
+                                    {availableReactions.map(({ emoji }) => (
+                                      <button
+                                        key={emoji}
+                                        onClick={() => {
+                                          handleReactionClick(prData.pullRequest.id, emoji, prData.pullRequest.reactions);
+                                          setReactionPickerOpen(null);
+                                        }}
+                                        className="text-xl hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated rounded p-1.5 transition-colors"
+                                      >
+                                        {emoji}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -757,9 +1095,9 @@ export function PRDetailPage() {
                 }`}
               >
                 Conversation
-                {conversationData?.conversation && (
+                {conversationData?.totalCommentCount !== undefined && (
                   <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-light-surface-elevated dark:bg-dark-surface-elevated">
-                    {conversationData.conversation.length}
+                    {conversationData.totalCommentCount}
                   </span>
                 )}
               </button>
@@ -856,13 +1194,22 @@ export function PRDetailPage() {
                               <div className="px-4 py-3 bg-light-surface dark:bg-dark-surface">
                                 <div className="prose prose-sm dark:prose-invert max-w-none text-light-text-primary dark:text-dark-text-primary">
                                   <ReactMarkdown
-                                    remarkPlugins={[remarkGfm]}
+                                    remarkPlugins={[remarkGfm, remarkBreaks]}
+                                    rehypePlugins={[rehypeRaw, rehypeSanitize]}
                                     components={{
-                                      p: ({node, children, ...props}) => (
-                                        <p className="mb-2 last:mb-0 text-light-text-primary dark:text-dark-text-primary leading-relaxed" {...props}>
-                                          {children}
-                                        </p>
-                                      ),
+                                      pre: ({ children }) => <pre className="my-4 not-prose">{children}</pre>,
+                                      p: ({node, children, ...props}) => {
+                                        // Check if children contains code blocks (to avoid <p><div> nesting)
+                                        const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
+                                          return child?.props?.className?.includes('language-');
+                                        });
+                                        const Element = hasCodeBlock ? 'div' : 'p';
+                                        return (
+                                          <Element className="mb-2 last:mb-0 text-light-text-primary dark:text-dark-text-primary leading-relaxed" {...props}>
+                                            {children}
+                                          </Element>
+                                        );
+                                      },
                                       a: ({node, ...props}) => <a className="text-light-accent-primary dark:text-dark-accent-primary hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
                                       strong: ({node, children, ...props}) => {
                                         const text = typeof children === 'string' ? children : String(children);
@@ -875,20 +1222,58 @@ export function PRDetailPage() {
                                         }
                                         return <strong className="font-semibold text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</strong>;
                                       },
+                                      blockquote: ({node, children, ...props}) => {
+                                        const childrenText = String(children);
+                                        const alertMatch = childrenText.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/);
+                                        if (alertMatch) {
+                                          const alertType = alertMatch[1].toLowerCase();
+                                          const alertStyles = { note: 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-900 dark:text-blue-100', tip: 'border-green-500 bg-green-50 dark:bg-green-900/20 text-green-900 dark:text-green-100', important: 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-900 dark:text-purple-100', warning: 'border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-900 dark:text-yellow-100', caution: 'border-red-500 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-100' };
+                                          const alertIcons = { note: '💡', tip: '✅', important: '⚠️', warning: '⚠️', caution: '🚫' };
+                                          const style = alertStyles[alertType as keyof typeof alertStyles] || alertStyles.note;
+                                          const icon = alertIcons[alertType as keyof typeof alertIcons] || '📝';
+                                          return (<div className={`border-l-4 ${style} p-4 rounded-r-lg my-4`}><div className="flex items-start gap-2"><span className="text-xl flex-shrink-0">{icon}</span><div className="flex-1"><div className="font-bold uppercase text-sm mb-1">{alertType}</div><div className="not-italic">{children}</div></div></div></div>);
+                                        }
+                                        return <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-4 italic my-4 text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</blockquote>;
+                                      },
+                                      li: ({node, children, ...props}) => {
+                                        const className = node?.properties?.className;
+                                        const hasCheckbox = Array.isArray(className) ? className.includes('task-list-item') : typeof className === 'string' && className.includes('task-list-item');
+                                        if (hasCheckbox) return (<li className="flex items-center gap-2 text-light-text-primary dark:text-dark-text-primary list-none" {...props}>{children}</li>);
+                                        return <li className="text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</li>;
+                                      },
+                                      input: ({node, ...props}) => {
+                                        if (props.type === 'checkbox') return (<input type="checkbox" disabled className="mr-2 h-4 w-4 rounded border-light-border dark:border-dark-border" {...props} />);
+                                        return <input {...props} />;
+                                      },
+                                      table: ({node, ...props}) => (<div className="overflow-x-auto my-4"><table className="min-w-full border border-light-border dark:border-dark-border rounded-lg" {...props} /></div>),
+                                      thead: ({node, ...props}) => <thead className="bg-light-surface-elevated dark:bg-dark-surface-elevated" {...props} />,
+                                      tbody: ({node, ...props}) => <tbody className="divide-y divide-light-border dark:divide-dark-border" {...props} />,
+                                      tr: ({node, ...props}) => <tr className="hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors" {...props} />,
+                                      th: ({node, ...props}) => <th className="px-4 py-3 text-left font-semibold text-sm text-light-text-primary dark:text-dark-text-primary border-b-2 border-light-border dark:border-dark-border" {...props} />,
+                                      td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-light-text-primary dark:text-dark-text-primary" {...props} />,
                                       code: ({node, inline, className, children, ...props}: any) => {
                                         const match = /language-(\w+)/.exec(className || '');
                                         const language = match ? match[1] : 'text';
-                                        return inline ? (
-                                          <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
-                                            {children}
-                                          </code>
-                                        ) : (
+
+                                        // Inline code
+                                        if (inline) {
+                                          return (
+                                            <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
+                                              {children}
+                                            </code>
+                                          );
+                                        }
+
+                                        // Handle Mermaid diagrams
+                                        if (language === 'mermaid') return <MermaidDiagram chart={String(children)} />;
+
+                                        // Block code
+                                        return (
                                           <SyntaxHighlighter
                                             style={isDarkMode ? oneDark : oneLight}
                                             language={language}
                                             PreTag="div"
                                             customStyle={{ margin: 0, borderRadius: '0.375rem', fontSize: '0.75rem' }}
-                                            {...props}
                                           >
                                             {String(children).replace(/\n$/, '')}
                                           </SyntaxHighlighter>
@@ -966,9 +1351,9 @@ export function PRDetailPage() {
 
                             {/* Review Content */}
                             <div className="flex-1 min-w-0">
-                              <div className="bg-light-surface-elevated dark:bg-dark-surface-elevated border border-light-border dark:border-dark-border rounded-lg overflow-hidden">
+                              <div className="border border-light-border dark:border-dark-border rounded-lg overflow-hidden">
                                 {/* Review Header */}
-                                <div className="px-4 py-2 bg-light-surface dark:bg-dark-surface border-b border-light-border dark:border-dark-border flex items-center gap-2">
+                                <div className="px-4 py-2 bg-light-surface-elevated dark:bg-dark-surface-elevated border-b border-light-border dark:border-dark-border flex items-center gap-2">
                                   <span className="font-semibold text-light-text-primary dark:text-dark-text-primary">
                                     {item.author?.login || 'Unknown'}
                                   </span>
@@ -990,16 +1375,24 @@ export function PRDetailPage() {
 
                                 {/* Review Body */}
                                 {item.body && (
-                                  <div className="px-4 py-3 border-b border-light-border dark:border-dark-border">
+                                  <div className="px-4 py-3 bg-light-surface dark:bg-dark-surface border-b border-light-border dark:border-dark-border">
                                     <div className="prose prose-sm dark:prose-invert max-w-none text-light-text-secondary dark:text-dark-text-secondary">
                                       <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
+                                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                                        rehypePlugins={[rehypeRaw, rehypeSanitize]}
                                         components={{
-                                          p: ({node, children, ...props}) => (
-                                            <p className="mb-2 text-light-text-secondary dark:text-dark-text-secondary" {...props}>
-                                              {children}
-                                            </p>
-                                          ),
+                                          pre: ({ children }) => <div className="my-4 not-prose">{children}</div>,
+                                          p: ({node, children, ...props}) => {
+                                            const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
+                                              return child?.props?.className?.includes('language-');
+                                            });
+                                            const Element = hasCodeBlock ? 'div' : 'p';
+                                            return (
+                                              <Element className="mb-2 text-light-text-secondary dark:text-dark-text-secondary" {...props}>
+                                                {children}
+                                              </Element>
+                                            );
+                                          },
                                           a: ({node, ...props}) => <a className="text-light-accent-primary dark:text-dark-accent-primary hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
                                           strong: ({node, children, ...props}) => {
                                             const text = typeof children === 'string' ? children : String(children);
@@ -1012,15 +1405,51 @@ export function PRDetailPage() {
                                             }
                                             return <strong className="font-bold text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</strong>;
                                           },
+                                          blockquote: ({node, children, ...props}) => {
+                                            const childrenText = String(children);
+                                            const alertMatch = childrenText.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/);
+                                            if (alertMatch) {
+                                              const alertType = alertMatch[1].toLowerCase();
+                                              const alertStyles = { note: 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-900 dark:text-blue-100', tip: 'border-green-500 bg-green-50 dark:bg-green-900/20 text-green-900 dark:text-green-100', important: 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-900 dark:text-purple-100', warning: 'border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-900 dark:text-yellow-100', caution: 'border-red-500 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-100' };
+                                              const alertIcons = { note: '💡', tip: '✅', important: '⚠️', warning: '⚠️', caution: '🚫' };
+                                              const style = alertStyles[alertType as keyof typeof alertStyles] || alertStyles.note;
+                                              const icon = alertIcons[alertType as keyof typeof alertIcons] || '📝';
+                                              return (<div className={`border-l-4 ${style} p-4 rounded-r-lg my-4`}><div className="flex items-start gap-2"><span className="text-xl flex-shrink-0">{icon}</span><div className="flex-1"><div className="font-bold uppercase text-sm mb-1">{alertType}</div><div className="not-italic">{children}</div></div></div></div>);
+                                            }
+                                            return <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-4 italic my-4 text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</blockquote>;
+                                          },
+                                          li: ({node, children, ...props}) => {
+                                            const className = node?.properties?.className;
+                                            const hasCheckbox = Array.isArray(className) ? className.includes('task-list-item') : typeof className === 'string' && className.includes('task-list-item');
+                                            if (hasCheckbox) return (<li className="flex items-center gap-2 text-light-text-primary dark:text-dark-text-primary list-none" {...props}>{children}</li>);
+                                            return <li className="text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</li>;
+                                          },
+                                          input: ({node, ...props}) => {
+                                            if (props.type === 'checkbox') return (<input type="checkbox" disabled className="mr-2 h-4 w-4 rounded border-light-border dark:border-dark-border" {...props} />);
+                                            return <input {...props} />;
+                                          },
+                                          table: ({node, ...props}) => (<div className="overflow-x-auto my-4"><table className="min-w-full border border-light-border dark:border-dark-border rounded-lg" {...props} /></div>),
+                                          thead: ({node, ...props}) => <thead className="bg-light-surface-elevated dark:bg-dark-surface-elevated" {...props} />,
+                                          tbody: ({node, ...props}) => <tbody className="divide-y divide-light-border dark:divide-dark-border" {...props} />,
+                                          tr: ({node, ...props}) => <tr className="hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors" {...props} />,
+                                          th: ({node, ...props}) => <th className="px-4 py-3 text-left font-semibold text-sm text-light-text-primary dark:text-dark-text-primary border-b-2 border-light-border dark:border-dark-border" {...props} />,
+                                          td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-light-text-primary dark:text-dark-text-primary" {...props} />,
                                           code: ({node, inline, className, children, ...props}: any) => {
                                             const match = /language-(\w+)/.exec(className || '');
                                             const language = match ? match[1] : 'text';
 
-                                            return inline ? (
-                                              <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
-                                                {children}
-                                              </code>
-                                            ) : (
+                                            if (inline) {
+                                              return (
+                                                <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
+                                                  {children}
+                                                </code>
+                                              );
+                                            }
+
+                                            // Handle Mermaid diagrams
+                                            if (language === 'mermaid') return <MermaidDiagram chart={String(children)} />;
+
+                                            return (
                                               <SyntaxHighlighter
                                                 style={isDarkMode ? oneDark : oneLight}
                                                 language={language}
@@ -1030,7 +1459,6 @@ export function PRDetailPage() {
                                                   borderRadius: '0.375rem',
                                                   fontSize: '0.75rem',
                                                 }}
-                                                {...props}
                                               >
                                                 {String(children).replace(/\n$/, '')}
                                               </SyntaxHighlighter>
@@ -1044,311 +1472,8 @@ export function PRDetailPage() {
                                   </div>
                                 )}
 
-                                {/* Review Comments */}
-                                {item.comments?.nodes && item.comments.nodes.length > 0 && (
-                                  <div className="border-t border-light-border dark:border-dark-border">
-                                    {organizeCommentsIntoThreads(item.comments.nodes).map((thread: CommentThread, threadIdx: number) => {
-                                      const comment = thread.topLevelComment;
-                                      const isAuthor = comment.author?.login === prAuthor;
-                                      const reactions = groupReactions(comment.reactions);
-                                      const lineNumbers = extractLineNumbers(comment.diffHunk);
-
-                                      return (
-                                        <div key={comment.id} className="p-4 border-b border-light-border dark:border-dark-border last:border-b-0">
-                                          {/* File Path and Line Numbers */}
-                                          <div className="mb-3">
-                                            <button
-                                              onClick={() => handleFilePathClick(comment.path, comment)}
-                                              className="inline-flex items-center gap-1.5 text-xs font-semibold text-light-text-secondary dark:text-dark-text-secondary hover:text-light-accent-primary dark:hover:text-dark-accent-primary transition-colors"
-                                            >
-                                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                              </svg>
-                                              <span className="font-mono">{comment.path}</span>
-                                            </button>
-                                            {lineNumbers && (
-                                              <div className="mt-1 text-xs text-light-text-muted dark:text-dark-text-muted">
-                                                Comment on lines {lineNumbers.startLine} to {lineNumbers.endLine}
-                                              </div>
-                                            )}
-                                          </div>
-
-                                          {/* Code Context */}
-                                          {comment.diffHunk && (
-                                            <div className="mb-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-md border border-light-border dark:border-dark-border overflow-hidden">
-                                              <div className="bg-light-surface dark:bg-dark-surface px-3 py-1.5 border-b border-light-border dark:border-dark-border flex items-center justify-between">
-                                                <span className="text-xs font-mono text-light-text-muted dark:text-dark-text-muted">Code</span>
-                                                {lineNumbers && (
-                                                  <span className="text-xs text-light-text-muted dark:text-dark-text-muted">
-                                                    Lines {lineNumbers.startLine}-{lineNumbers.endLine}
-                                                  </span>
-                                                )}
-                                              </div>
-                                              <div className="overflow-x-auto">
-                                                {renderDiffWithLineNumbers(comment.diffHunk, isDarkMode, comment.path)}
-                                              </div>
-                                            </div>
-                                          )}
-
-                                          {/* Comment Bubble */}
-                                          <div className="flex gap-2">
-                                            <img
-                                              src={comment.author?.avatarUrl || 'https://github.com/identicons/default.png'}
-                                              alt={comment.author?.login || 'User'}
-                                              className="w-8 h-8 rounded-full flex-shrink-0"
-                                            />
-                                            <div className="flex-1 min-w-0 border border-light-border dark:border-dark-border rounded-md overflow-hidden">
-                                              {/* Comment Header */}
-                                              <div className="px-3 py-2 bg-light-surface-elevated dark:bg-dark-surface-elevated border-b border-light-border dark:border-dark-border">
-                                                <div className="flex items-center gap-2 flex-wrap">
-                                                  <span className="font-semibold text-sm text-light-text-primary dark:text-dark-text-primary">
-                                                    {comment.author?.login || 'Unknown'}
-                                                  </span>
-                                                  {isAuthor && (
-                                                    <span className="px-1.5 py-0.5 text-xs font-medium border border-light-border dark:border-dark-border rounded text-light-text-secondary dark:text-dark-text-secondary">
-                                                      Author
-                                                    </span>
-                                                  )}
-                                                  <span className="text-xs text-light-text-muted dark:text-dark-text-muted">
-                                                    {new Date(comment.createdAt).toLocaleString()}
-                                                  </span>
-                                                </div>
-                                              </div>
-
-                                              {/* Comment Body */}
-                                              <div className="px-3 py-2 bg-light-surface dark:bg-dark-surface">
-                                                <div className="prose prose-sm dark:prose-invert max-w-none text-light-text-primary dark:text-dark-text-primary">
-                                                  <ReactMarkdown
-                                                    remarkPlugins={[remarkGfm]}
-                                                    components={{
-                                                      p: ({node, children, ...props}) => (
-                                                        <p className="mb-2 last:mb-0 text-light-text-primary dark:text-dark-text-primary leading-relaxed" {...props}>
-                                                          {children}
-                                                        </p>
-                                                      ),
-                                                      strong: ({node, children, ...props}) => {
-                                                        const text = typeof children === 'string' ? children : String(children);
-                                                        if (text.match(/^@[\w-]+$/)) {
-                                                          return (
-                                                            <span className="font-semibold text-light-accent-primary dark:text-dark-accent-primary hover:underline cursor-pointer">
-                                                              {children}
-                                                            </span>
-                                                          );
-                                                        }
-                                                        return <strong className="font-semibold text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</strong>;
-                                                      },
-                                                      code: ({node, inline, className, children, ...props}: any) => {
-                                                        return inline ? (
-                                                          <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
-                                                            {children}
-                                                          </code>
-                                                        ) : (
-                                                          <code className="block p-2 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border overflow-x-auto" {...props}>
-                                                            {children}
-                                                          </code>
-                                                        );
-                                                      },
-                                                    }}
-                                                  >
-                                                    {processMentions(comment.body)}
-                                                  </ReactMarkdown>
-                                                </div>
-
-                                                {/* Reactions */}
-                                                <div className="flex items-center gap-1 mt-2 pt-2 border-t border-light-border dark:border-dark-border">
-                                                  {reactions.length > 0 && reactions.map((reaction, idx) => {
-                                                    const userHasReacted = comment.reactions?.nodes?.some(
-                                                      (r: any) => r.content === reaction.content && r.user?.login === currentUser
-                                                    );
-                                                    return (
-                                                      <button
-                                                        key={idx}
-                                                        onClick={() => handleReactionClick(comment.id, reaction.content, comment.reactions)}
-                                                        className={`flex items-center gap-1 px-2 py-0.5 text-xs border rounded-full transition-colors ${
-                                                          userHasReacted
-                                                            ? 'border-light-accent-primary dark:border-dark-accent-primary bg-light-accent-primary/10 dark:bg-dark-accent-primary/10'
-                                                            : 'border-light-border dark:border-dark-border hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
-                                                        }`}
-                                                        title={reaction.users.join(', ')}
-                                                      >
-                                                        <span>{reaction.emoji}</span>
-                                                        <span className="text-light-text-secondary dark:text-dark-text-secondary font-medium">{reaction.count}</span>
-                                                      </button>
-                                                    );
-                                                  })}
-                                                  {/* Add reaction button */}
-                                                  <div className="relative">
-                                                    <button
-                                                      onClick={() => setReactionPickerOpen(reactionPickerOpen === comment.id ? null : comment.id)}
-                                                      className="flex items-center justify-center w-7 h-7 text-xs border border-light-border dark:border-dark-border rounded-full hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors"
-                                                      title="Add reaction"
-                                                    >
-                                                      <span className="text-light-text-muted dark:text-dark-text-muted">😊</span>
-                                                    </button>
-                                                    {/* Reaction Picker */}
-                                                    {reactionPickerOpen === comment.id && (
-                                                      <div className="absolute left-0 bottom-full mb-2 p-2 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg z-10 flex gap-1">
-                                                        {availableReactions.map((r) => (
-                                                          <button
-                                                            key={r.content}
-                                                            onClick={() => handleAddReaction(comment.id, r.emoji, r.content)}
-                                                            className="w-8 h-8 flex items-center justify-center hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated rounded transition-colors"
-                                                            title={r.content}
-                                                          >
-                                                            {r.emoji}
-                                                          </button>
-                                                        ))}
-                                                      </div>
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            </div>
-                                          </div>
-
-                                          {/* Replies */}
-                                          {thread.replies && thread.replies.length > 0 && (
-                                            <div className="relative mt-[10px] mr-[10px] mb-[10px] ml-3">
-                                              {/* Connecting line */}
-                                              <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-light-border dark:bg-dark-border"></div>
-
-                                              <div className="space-y-3 pl-8">
-                                                {thread.replies.map((reply: any, replyIdx: number) => {
-                                                  const isReplyAuthor = reply.author?.login === prAuthor;
-                                                  const replyReactions = groupReactions(reply.reactions);
-
-                                                  return (
-                                                    <div key={reply.id} className="relative">
-                                                      {/* Horizontal connecting line */}
-                                                      <div className="absolute left-[-24px] top-5 w-6 h-0.5 bg-light-border dark:bg-dark-border"></div>
-
-                                                      <div className="flex gap-3">
-                                                        <img
-                                                          src={reply.author?.avatarUrl || 'https://github.com/identicons/default.png'}
-                                                          alt={reply.author?.login || 'User'}
-                                                          className="w-7 h-7 rounded-full flex-shrink-0"
-                                                        />
-                                                        <div className="flex-1 min-w-0">
-                                                          <div className="border border-light-border dark:border-dark-border rounded-lg overflow-hidden bg-light-surface dark:bg-dark-surface">
-                                                            {/* Reply Header */}
-                                                            <div className="px-3 py-2 bg-light-surface-elevated dark:bg-dark-surface-elevated border-b border-light-border dark:border-dark-border">
-                                                              <div className="flex items-center gap-2 flex-wrap">
-                                                                <span className="font-semibold text-sm text-light-text-primary dark:text-dark-text-primary">
-                                                                  {reply.author?.login || 'Unknown'}
-                                                                </span>
-                                                                {isReplyAuthor && (
-                                                                  <span className="px-1.5 py-0.5 text-xs font-medium bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded text-light-text-secondary dark:text-dark-text-secondary">
-                                                                    Author
-                                                                  </span>
-                                                                )}
-                                                                <span className="text-xs text-light-text-muted dark:text-dark-text-muted">
-                                                                  replied {new Date(reply.createdAt).toLocaleString()}
-                                                                </span>
-                                                              </div>
-                                                            </div>
-
-                                                            {/* Reply Body */}
-                                                            <div className="px-3 py-3">
-                                                              <div className="prose prose-sm dark:prose-invert max-w-none text-light-text-primary dark:text-dark-text-primary">
-                                                                <ReactMarkdown
-                                                                  remarkPlugins={[remarkGfm]}
-                                                                  components={{
-                                                                    p: ({node, children, ...props}) => (
-                                                                      <p className="mb-2 last:mb-0 text-light-text-primary dark:text-dark-text-primary leading-relaxed" {...props}>
-                                                                        {children}
-                                                                      </p>
-                                                                    ),
-                                                                    strong: ({node, children, ...props}) => {
-                                                                      const text = typeof children === 'string' ? children : String(children);
-                                                                      if (text.match(/^@[\w-]+$/)) {
-                                                                        return (
-                                                                          <span className="font-semibold text-light-accent-primary dark:text-dark-accent-primary hover:underline cursor-pointer">
-                                                                            {children}
-                                                                          </span>
-                                                                        );
-                                                                      }
-                                                                      return <strong className="font-bold text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</strong>;
-                                                                    },
-                                                                    code: ({node, inline, className, children, ...props}: any) => {
-                                                                      return inline ? (
-                                                                        <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
-                                                                          {children}
-                                                                        </code>
-                                                                      ) : (
-                                                                        <code className="block p-2 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border overflow-x-auto" {...props}>
-                                                                          {children}
-                                                                        </code>
-                                                                      );
-                                                                    },
-                                                                  }}
-                                                                >
-                                                                  {processMentions(reply.body)}
-                                                                </ReactMarkdown>
-                                                              </div>
-
-                                                              {/* Reply Reactions */}
-                                                              <div className="flex items-center gap-1 mt-3 pt-3 border-t border-light-border dark:border-dark-border">
-                                                                {replyReactions.length > 0 && replyReactions.map((reaction, idx) => {
-                                                                  const userHasReacted = reply.reactions?.nodes?.some(
-                                                                    (r: any) => r.content === reaction.content && r.user?.login === currentUser
-                                                                  );
-                                                                  return (
-                                                                    <button
-                                                                      key={idx}
-                                                                      onClick={() => handleReactionClick(reply.id, reaction.content, reply.reactions)}
-                                                                      className={`flex items-center gap-1 px-2 py-1 text-xs border rounded-md transition-colors ${
-                                                                        userHasReacted
-                                                                          ? 'border-light-accent-primary dark:border-dark-accent-primary bg-light-accent-primary/10 dark:bg-dark-accent-primary/10'
-                                                                          : 'border-light-border dark:border-dark-border hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
-                                                                      }`}
-                                                                      title={reaction.users.join(', ')}
-                                                                    >
-                                                                      <span>{reaction.emoji}</span>
-                                                                      <span className="text-light-text-secondary dark:text-dark-text-secondary font-medium">{reaction.count}</span>
-                                                                    </button>
-                                                                  );
-                                                                })}
-                                                                {/* Add reaction button */}
-                                                                <div className="relative">
-                                                                  <button
-                                                                    onClick={() => setReactionPickerOpen(reactionPickerOpen === reply.id ? null : reply.id)}
-                                                                    className="flex items-center justify-center w-7 h-7 text-xs border border-light-border dark:border-dark-border rounded-md hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors"
-                                                                    title="Add reaction"
-                                                                  >
-                                                                    <span className="text-light-text-muted dark:text-dark-text-muted">😊</span>
-                                                                  </button>
-                                                                  {/* Reaction Picker */}
-                                                                  {reactionPickerOpen === reply.id && (
-                                                                    <div className="absolute left-0 bottom-full mb-2 p-2 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg z-10 flex gap-1">
-                                                                      {availableReactions.map((r) => (
-                                                                        <button
-                                                                          key={r.content}
-                                                                          onClick={() => handleAddReaction(reply.id, r.emoji, r.content)}
-                                                                          className="w-8 h-8 flex items-center justify-center hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated rounded transition-colors"
-                                                                          title={r.content}
-                                                                        >
-                                                                          {r.emoji}
-                                                                        </button>
-                                                                      ))}
-                                                                    </div>
-                                                                  )}
-                                                                </div>
-                                                              </div>
-                                                            </div>
-                                                          </div>
-                                                        </div>
-                                                      </div>
-                                                    </div>
-                                                  );
-                                                })}
-                                              </div>
-                                            </div>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
+                                {/* Note: Inline comments from PullRequestReview are not displayed here
+                                    as they are already shown in PullRequestReviewThread sections below */}
                               </div>
                             </div>
                           </div>
@@ -1360,7 +1485,7 @@ export function PRDetailPage() {
                         const lineNumbers = extractLineNumbers(firstComment.diffHunk);
 
                         return (
-                          <div key={item.id || index} className="border border-light-border dark:border-dark-border rounded-md overflow-hidden">
+                          <div key={item.id || index} className="border border-light-border dark:border-dark-border rounded-md overflow-hidden my-6">
                             {/* File Path and Line Numbers */}
                             <div className="px-4 py-2 bg-light-surface-elevated dark:bg-dark-surface-elevated border-b border-light-border dark:border-dark-border">
                               <div className="flex items-center justify-between">
@@ -1378,11 +1503,18 @@ export function PRDetailPage() {
                                     </span>
                                   )}
                                 </button>
-                                {item.isResolved && (
-                                  <span className="text-xs px-2 py-0.5 rounded-full bg-light-accent-success/10 dark:bg-dark-accent-success/10 text-light-accent-success dark:text-dark-accent-success font-medium">
-                                    Resolved
-                                  </span>
-                                )}
+                                <div className="flex items-center gap-2">
+                                  {item.isOutdated && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-muted dark:text-dark-text-muted border border-light-border dark:border-dark-border font-medium">
+                                      Outdated
+                                    </span>
+                                  )}
+                                  {item.isResolved && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full bg-light-accent-success/10 dark:bg-dark-accent-success/10 text-light-accent-success dark:text-dark-accent-success font-medium">
+                                      Resolved
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </div>
 
@@ -1405,11 +1537,6 @@ export function PRDetailPage() {
 
                             {/* Thread Comments */}
                             <div className="bg-light-surface dark:bg-dark-surface">
-                              {(() => {
-                                console.log('[Thread Render] Thread ID:', item.id, 'Total comments:', item.comments.nodes.length);
-                                console.log('[Thread Render] Comments:', item.comments.nodes.map((c: any) => ({ id: c.id, author: c.author?.login, body: c.body.substring(0, 50) })));
-                              })()}
-
                               {/* First comment (original) */}
                               {item.comments.nodes.length > 0 && (() => {
                                 const comment = item.comments.nodes[0];
@@ -1443,13 +1570,24 @@ export function PRDetailPage() {
                                         {/* Comment Body with mentions */}
                                         <div className="prose prose-sm dark:prose-invert max-w-none mb-2 text-light-text-primary dark:text-dark-text-primary">
                                           <ReactMarkdown
-                                            remarkPlugins={[remarkGfm]}
+                                            remarkPlugins={[remarkGfm, remarkBreaks]}
+                                            rehypePlugins={[rehypeRaw, rehypeSanitize]}
                                             components={{
-                                              p: ({node, children, ...props}) => (
-                                                <p className="mb-2 last:mb-0 text-light-text-primary dark:text-dark-text-primary leading-relaxed" {...props}>
-                                                  {children}
-                                                </p>
-                                              ),
+                                              pre: ({ children }) => <div className="my-4 not-prose">{children}</div>,
+                                              p: ({node, children, ...props}) => {
+                                                const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
+                                                  if (child?.props?.className?.includes('language-')) return true;
+                                                  if (child?.type === 'div' || child?.type === 'pre') return true;
+                                                  return false;
+                                                });
+                                                const Element = hasCodeBlock ? 'div' : 'p';
+                                                return (
+                                                  <Element className="mb-2 last:mb-0 text-light-text-primary dark:text-dark-text-primary leading-relaxed" {...props}>
+                                                    {children}
+                                                  </Element>
+                                                );
+                                              },
+                                              a: ({node, ...props}) => <a className="text-light-accent-primary dark:text-dark-accent-primary hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
                                               strong: ({node, children, ...props}) => {
                                                 const text = typeof children === 'string' ? children : String(children);
                                                 if (text.match(/^@[\w-]+$/)) {
@@ -1461,15 +1599,61 @@ export function PRDetailPage() {
                                                 }
                                                 return <strong className="font-semibold text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</strong>;
                                               },
+                                              blockquote: ({node, children, ...props}) => {
+                                                const childrenText = String(children);
+                                                const alertMatch = childrenText.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/);
+                                                if (alertMatch) {
+                                                  const alertType = alertMatch[1].toLowerCase();
+                                                  const alertStyles = { note: 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-900 dark:text-blue-100', tip: 'border-green-500 bg-green-50 dark:bg-green-900/20 text-green-900 dark:text-green-100', important: 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-900 dark:text-purple-100', warning: 'border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-900 dark:text-yellow-100', caution: 'border-red-500 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-100' };
+                                                  const alertIcons = { note: '💡', tip: '✅', important: '⚠️', warning: '⚠️', caution: '🚫' };
+                                                  const style = alertStyles[alertType as keyof typeof alertStyles] || alertStyles.note;
+                                                  const icon = alertIcons[alertType as keyof typeof alertIcons] || '📝';
+                                                  return (<div className={`border-l-4 ${style} p-3 rounded-r-lg my-2`}><div className="flex items-start gap-2"><span className="text-lg flex-shrink-0">{icon}</span><div className="flex-1"><div className="font-bold uppercase text-xs mb-1">{alertType}</div><div className="not-italic text-sm">{children}</div></div></div></div>);
+                                                }
+                                                return <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-3 italic my-2 text-sm" {...props}>{children}</blockquote>;
+                                              },
+                                              li: ({node, children, ...props}) => {
+                                                const className = node?.properties?.className;
+                                                const hasCheckbox = Array.isArray(className) ? className.includes('task-list-item') : typeof className === 'string' && className.includes('task-list-item');
+                                                if (hasCheckbox) return (<li className="flex items-center gap-2 text-light-text-primary dark:text-dark-text-primary list-none text-sm" {...props}>{children}</li>);
+                                                return <li className="text-light-text-primary dark:text-dark-text-primary text-sm" {...props}>{children}</li>;
+                                              },
+                                              input: ({node, ...props}) => {
+                                                if (props.type === 'checkbox') return (<input type="checkbox" disabled className="mr-1.5 h-3.5 w-3.5 rounded border-light-border dark:border-dark-border" {...props} />);
+                                                return <input {...props} />;
+                                              },
+                                              table: ({node, ...props}) => (<div className="overflow-x-auto my-2"><table className="min-w-full border border-light-border dark:border-dark-border rounded-md text-sm" {...props} /></div>),
+                                              thead: ({node, ...props}) => <thead className="bg-light-surface-elevated dark:bg-dark-surface-elevated" {...props} />,
+                                              tbody: ({node, ...props}) => <tbody className="divide-y divide-light-border dark:divide-dark-border" {...props} />,
+                                              tr: ({node, ...props}) => <tr className="hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors" {...props} />,
+                                              th: ({node, ...props}) => <th className="px-3 py-2 text-left font-semibold text-xs" {...props} />,
+                                              td: ({node, ...props}) => <td className="px-3 py-2 text-xs" {...props} />,
                                               code: ({node, inline, className, children, ...props}: any) => {
-                                                return inline ? (
-                                                  <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
-                                                    {children}
-                                                  </code>
-                                                ) : (
-                                                  <code className="block p-2 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border overflow-x-auto" {...props}>
-                                                    {children}
-                                                  </code>
+                                                const match = /language-(\w+)/.exec(className || '');
+                                                const language = match ? match[1] : 'text';
+                                                
+                                                // Treat as inline code if: 1) inline prop is true, OR 2) no language- className
+                                                if (inline || !match) {
+                                                  return (
+                                                    <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
+                                                      {children}
+                                                    </code>
+                                                  );
+                                                }
+
+                                                // Handle Mermaid diagrams
+                                                if (language === 'mermaid') return <MermaidDiagram chart={String(children)} />;
+
+                                                // Block code - use SyntaxHighlighter
+                                                return (
+                                                  <SyntaxHighlighter
+                                                    style={isDarkMode ? oneDark : oneLight}
+                                                    language={language}
+                                                    PreTag="div"
+                                                    customStyle={{ margin: '0.5rem 0', borderRadius: '0.375rem', fontSize: '0.7rem' }}
+                                                  >
+                                                    {String(children).replace(/\n$/, '')}
+                                                  </SyntaxHighlighter>
                                                 );
                                               },
                                             }}
@@ -1533,19 +1717,6 @@ export function PRDetailPage() {
                               })()}
 
                               {/* Replies (remaining comments) */}
-                              {(() => {
-                                const replyCount = item.comments.nodes.length - 1;
-                                console.log('[Replies Check] Thread has', item.comments.nodes.length, 'comments, replies:', replyCount);
-                                if (replyCount > 0) {
-                                  console.log('[Replies Data]', item.comments.nodes.slice(1).map((r: any) => ({
-                                    id: r.id,
-                                    author: r.author?.login,
-                                    bodyPreview: r.body.substring(0, 30)
-                                  })));
-                                }
-                                return null;
-                              })()}
-
                               {item.comments.nodes.length > 1 && (
                                 <div className="relative mt-[10px] mr-[10px] mb-[10px] ml-3">
                                   {/* Connecting line */}
@@ -1594,13 +1765,24 @@ export function PRDetailPage() {
                                                 <div className="px-4 py-3">
                                                   <div className="prose prose-sm dark:prose-invert max-w-none text-light-text-primary dark:text-dark-text-primary">
                                                     <ReactMarkdown
-                                                      remarkPlugins={[remarkGfm]}
+                                                      remarkPlugins={[remarkGfm, remarkBreaks]}
+                                                      rehypePlugins={[rehypeRaw, rehypeSanitize]}
                                                       components={{
-                                                        p: ({node, children, ...props}) => (
-                                                          <p className="mb-2 last:mb-0 text-light-text-primary dark:text-dark-text-primary leading-relaxed" {...props}>
-                                                            {children}
-                                                          </p>
-                                                        ),
+                                                        pre: ({ children }) => <div className="my-4 not-prose">{children}</div>,
+                                                        p: ({node, children, ...props}) => {
+                                                          const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
+                                                            if (child?.props?.className?.includes('language-')) return true;
+                                                            if (child?.type === 'div' || child?.type === 'pre') return true;
+                                                            return false;
+                                                          });
+                                                          const Element = hasCodeBlock ? 'div' : 'p';
+                                                          return (
+                                                            <Element className="mb-2 last:mb-0 text-light-text-primary dark:text-dark-text-primary leading-relaxed" {...props}>
+                                                              {children}
+                                                            </Element>
+                                                          );
+                                                        },
+                                                        a: ({node, ...props}) => <a className="text-light-accent-primary dark:text-dark-accent-primary hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
                                                         strong: ({node, children, ...props}) => {
                                                           const text = typeof children === 'string' ? children : String(children);
                                                           if (text.match(/^@[\w-]+$/)) {
@@ -1612,15 +1794,60 @@ export function PRDetailPage() {
                                                           }
                                                           return <strong className="font-bold text-light-text-primary dark:text-dark-text-primary" {...props}>{children}</strong>;
                                                         },
+                                                        blockquote: ({node, children, ...props}) => {
+                                                          const childrenText = String(children);
+                                                          const alertMatch = childrenText.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/);
+                                                          if (alertMatch) {
+                                                            const alertType = alertMatch[1].toLowerCase();
+                                                            const alertStyles = { note: 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-900 dark:text-blue-100', tip: 'border-green-500 bg-green-50 dark:bg-green-900/20 text-green-900 dark:text-green-100', important: 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-900 dark:text-purple-100', warning: 'border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-900 dark:text-yellow-100', caution: 'border-red-500 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-100' };
+                                                            const alertIcons = { note: '💡', tip: '✅', important: '⚠️', warning: '⚠️', caution: '🚫' };
+                                                            const style = alertStyles[alertType as keyof typeof alertStyles] || alertStyles.note;
+                                                            const icon = alertIcons[alertType as keyof typeof alertIcons] || '📝';
+                                                            return (<div className={`border-l-4 ${style} p-3 rounded-r-lg my-2`}><div className="flex items-start gap-2"><span className="text-lg flex-shrink-0">{icon}</span><div className="flex-1"><div className="font-bold uppercase text-xs mb-1">{alertType}</div><div className="not-italic text-sm">{children}</div></div></div></div>);
+                                                          }
+                                                          return <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-3 italic my-2 text-sm" {...props}>{children}</blockquote>;
+                                                        },
+                                                        li: ({node, children, ...props}) => {
+                                                          const hasCheckbox = node?.properties?.className?.includes('task-list-item');
+                                                          if (hasCheckbox) return (<li className="flex items-center gap-2 text-light-text-primary dark:text-dark-text-primary list-none text-sm" {...props}>{children}</li>);
+                                                          return <li className="text-light-text-primary dark:text-dark-text-primary text-sm" {...props}>{children}</li>;
+                                                        },
+                                                        input: ({node, ...props}) => {
+                                                          if (props.type === 'checkbox') return (<input type="checkbox" disabled className="mr-1.5 h-3.5 w-3.5 rounded border-light-border dark:border-dark-border" {...props} />);
+                                                          return <input {...props} />;
+                                                        },
+                                                        table: ({node, ...props}) => (<div className="overflow-x-auto my-2"><table className="min-w-full border border-light-border dark:border-dark-border rounded-md text-sm" {...props} /></div>),
+                                                        thead: ({node, ...props}) => <thead className="bg-light-surface-elevated dark:bg-dark-surface-elevated" {...props} />,
+                                                        tbody: ({node, ...props}) => <tbody className="divide-y divide-light-border dark:divide-dark-border" {...props} />,
+                                                        tr: ({node, ...props}) => <tr className="hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors" {...props} />,
+                                                        th: ({node, ...props}) => <th className="px-3 py-2 text-left font-semibold text-xs" {...props} />,
+                                                        td: ({node, ...props}) => <td className="px-3 py-2 text-xs" {...props} />,
                                                         code: ({node, inline, className, children, ...props}: any) => {
-                                                          return inline ? (
-                                                            <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
-                                                              {children}
-                                                            </code>
-                                                          ) : (
-                                                            <code className="block p-2 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border overflow-x-auto" {...props}>
-                                                              {children}
-                                                            </code>
+                                                          const match = /language-(\w+)/.exec(className || '');
+                                                          const language = match ? match[1] : 'text';
+                                                          
+                                                          // Treat as inline code if: 1) inline prop is true, OR 2) no language- className
+                                                          if (inline || !match) {
+                                                            return (
+                                                              <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
+                                                                {children}
+                                                              </code>
+                                                            );
+                                                          }
+
+                                                          // Handle Mermaid diagrams
+                                                          if (language === 'mermaid') return <MermaidDiagram chart={String(children)} />;
+
+                                                          // Block code - use SyntaxHighlighter
+                                                          return (
+                                                            <SyntaxHighlighter
+                                                              style={isDarkMode ? oneDark : oneLight}
+                                                              language={language}
+                                                              PreTag="div"
+                                                              customStyle={{ margin: '0.5rem 0', borderRadius: '0.375rem', fontSize: '0.7rem' }}
+                                                            >
+                                                              {String(children).replace(/\n$/, '')}
+                                                            </SyntaxHighlighter>
                                                           );
                                                         },
                                                       }}
@@ -1630,20 +1857,53 @@ export function PRDetailPage() {
                                                   </div>
 
                                                   {/* Reactions */}
-                                                  {replyReactions.length > 0 && (
-                                                    <div className="flex items-center gap-1 mt-3 pt-3 border-t border-light-border dark:border-dark-border">
-                                                      {replyReactions.map((reaction, idx) => (
+                                                  <div className="flex items-center gap-1 mt-3 pt-3 border-t border-light-border dark:border-dark-border">
+                                                    {replyReactions.length > 0 && replyReactions.map((reaction, idx) => {
+                                                      const userHasReacted = reply.reactions?.nodes?.some(
+                                                        (r: any) => r.content === reaction.content && r.user?.login === currentUser
+                                                      );
+                                                      return (
                                                         <button
                                                           key={idx}
-                                                          className="flex items-center gap-1 px-2 py-1 text-xs border border-light-border dark:border-dark-border rounded-md hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors"
+                                                          onClick={() => handleReactionClick(reply.id, reaction.content, reply.reactions)}
+                                                          className={`flex items-center gap-1 px-2 py-0.5 text-xs border rounded-full transition-colors ${
+                                                            userHasReacted
+                                                              ? 'border-light-accent-primary dark:border-dark-accent-primary bg-light-accent-primary/10 dark:bg-dark-accent-primary/10'
+                                                              : 'border-light-border dark:border-dark-border hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+                                                          }`}
                                                           title={reaction.users.join(', ')}
                                                         >
                                                           <span>{reaction.emoji}</span>
                                                           <span className="text-light-text-secondary dark:text-dark-text-secondary font-medium">{reaction.count}</span>
                                                         </button>
-                                                      ))}
+                                                      );
+                                                    })}
+                                                    {/* Add reaction button */}
+                                                    <div className="relative">
+                                                      <button
+                                                        onClick={() => setReactionPickerOpen(reactionPickerOpen === reply.id ? null : reply.id)}
+                                                        className="flex items-center justify-center w-7 h-7 text-xs border border-light-border dark:border-dark-border rounded-full hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors"
+                                                        title="Add reaction"
+                                                      >
+                                                        <span className="text-light-text-muted dark:text-dark-text-muted">😊</span>
+                                                      </button>
+                                                      {/* Reaction Picker */}
+                                                      {reactionPickerOpen === reply.id && (
+                                                        <div className="absolute left-0 bottom-full mb-2 p-2 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg z-10 flex gap-1">
+                                                          {availableReactions.map((r) => (
+                                                            <button
+                                                              key={r.content}
+                                                              onClick={() => handleAddReaction(reply.id, r.emoji, r.content)}
+                                                              className="w-8 h-8 flex items-center justify-center hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated rounded transition-colors"
+                                                              title={r.content}
+                                                            >
+                                                              {r.emoji}
+                                                            </button>
+                                                          ))}
+                                                        </div>
+                                                      )}
                                                     </div>
-                                                  )}
+                                                  </div>
                                                 </div>
                                               </div>
                                             </div>
@@ -1655,12 +1915,33 @@ export function PRDetailPage() {
                                 </div>
                               )}
 
-                              {/* Reply Input Placeholder */}
+                              {/* Reply Input */}
                               {!item.isResolved && (
                                 <div className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated border-t border-light-border dark:border-dark-border">
-                                  <button className="w-full text-left px-3 py-2 text-sm text-light-text-muted dark:text-dark-text-muted bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-md hover:border-light-accent-primary dark:hover:border-dark-accent-primary transition-colors">
-                                    Write a reply...
-                                  </button>
+                                  {replyingTo !== item.id ? (
+                                    <button
+                                      onClick={() => setReplyingTo(item.id)}
+                                      className="w-full text-left px-3 py-2 text-sm text-light-text-muted dark:text-dark-text-muted bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-md hover:border-light-accent-primary dark:hover:border-dark-accent-primary transition-colors"
+                                    >
+                                      Write a reply...
+                                    </button>
+                                  ) : (
+                                    <CommentEditor
+                                      value={commentText[item.id] || ''}
+                                      onChange={(val) => setCommentText((prev) => ({ ...prev, [item.id]: val }))}
+                                      onSubmit={() => handleSubmitComment(item.id, item.comments.nodes[0]?.id)}
+                                      onCancel={() => {
+                                        setReplyingTo(null);
+                                        setCommentText((prev) => ({ ...prev, [item.id]: '' }));
+                                      }}
+                                      placeholder="Write a reply..."
+                                      submitLabel="Reply"
+                                      isSubmitting={isSubmitting}
+                                      autoFocus={true}
+                                      minHeight={120}
+                                      originalCode={firstComment.diffHunk ? firstComment.diffHunk.split('\n').filter(l => l.startsWith('+')).map(l => l.substring(1)).join('\n') : undefined}
+                                    />
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -1710,32 +1991,17 @@ export function PRDetailPage() {
                             Write a comment...
                           </button>
                         ) : (
-                          <div className="border border-light-border dark:border-dark-border rounded-md overflow-hidden">
-                            <textarea
-                              value={commentText['new'] || ''}
-                              onChange={(e) => setCommentText((prev) => ({ ...prev, new: e.target.value }))}
-                              placeholder="Leave a comment"
-                              className="w-full px-4 py-3 text-sm bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary resize-none focus:outline-none"
-                              rows={4}
-                              disabled={isSubmitting}
-                            />
-                            <div className="flex items-center justify-end gap-2 px-3 py-2 bg-light-surface-elevated dark:bg-dark-surface-elevated border-t border-light-border dark:border-dark-border">
-                              <button
-                                onClick={() => handleCancelComment()}
-                                disabled={isSubmitting}
-                                className="px-3 py-1.5 text-sm text-light-text-secondary dark:text-dark-text-secondary hover:text-light-text-primary dark:hover:text-dark-text-primary transition-colors"
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                onClick={() => handleSubmitComment()}
-                                disabled={isSubmitting || !commentText['new']?.trim()}
-                                className="px-3 py-1.5 text-sm font-medium text-white bg-light-accent-primary dark:bg-dark-accent-primary rounded hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-                              >
-                                {isSubmitting ? 'Posting...' : 'Comment'}
-                              </button>
-                            </div>
-                          </div>
+                          <CommentEditor
+                            value={commentText['new'] || ''}
+                            onChange={(val) => setCommentText((prev) => ({ ...prev, new: val }))}
+                            onSubmit={() => handleSubmitComment()}
+                            onCancel={() => handleCancelComment()}
+                            placeholder="Leave a comment"
+                            submitLabel="Comment"
+                            isSubmitting={isSubmitting}
+                            autoFocus={true}
+                            minHeight={150}
+                          />
                         )}
                       </div>
                     </div>

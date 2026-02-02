@@ -5,6 +5,7 @@ import { DatabaseService } from '../services/DatabaseService.js';
 import { ConfigService } from '../services/ConfigService.js';
 import { AIReviewService } from '../services/AIReviewService.js';
 import { ProjectIndexService } from '../services/ProjectIndexService.js';
+import { ContextAnalyzer } from '../services/ContextAnalyzer.js';
 
 export async function prRoutes(fastify: FastifyInstance) {
   const gitService = new GitService();
@@ -97,6 +98,36 @@ export async function prRoutes(fastify: FastifyInstance) {
   });
 
   /**
+   * GET /api/prs/authored
+   * Get PRs authored by current user
+   */
+  fastify.get('/api/prs/authored', async (request, reply) => {
+    try {
+      const authenticated = await githubService.isAuthenticated();
+
+      if (!authenticated) {
+        return reply.code(401).send({
+          error: 'Not authenticated',
+          message: 'Please run: gh auth login',
+        });
+      }
+
+      const prs = await githubService.getAuthoredPRs();
+
+      return reply.send({
+        pullRequests: prs,
+        count: prs.length,
+      });
+    } catch (error: any) {
+      fastify.log.error(error);
+      return reply.code(500).send({
+        error: 'Failed to fetch authored PRs',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
    * GET /api/prs/:owner/:repo/:number
    * Get details of a specific pull request
    */
@@ -135,6 +166,9 @@ export async function prRoutes(fastify: FastifyInstance) {
         // Fetch commits
         const commits = await githubService.getPRCommits(owner, repo, prNumber);
 
+        // Fetch repository languages
+        const languages = await githubService.getRepositoryLanguages(owner, repo);
+
         // Save to database
         dbService.savePullRequest({
           prNumber: pr.number,
@@ -156,6 +190,7 @@ export async function prRoutes(fastify: FastifyInstance) {
           pullRequest: pr,
           files,
           commits,
+          languages,
         });
       } catch (error: any) {
         fastify.log.error(error);
@@ -199,20 +234,25 @@ export async function prRoutes(fastify: FastifyInstance) {
           });
         }
 
-        // Get or clone the repository for review
+        // Get or clone the repository for review (as bare repo)
         const repoPath = configService.getRepoPath(owner, repo);
 
-        // Clone or update the repository
+        // Clone or update the repository (now as bare repo)
         await gitService.cloneOrUpdateRepo(owner, repo, repoPath);
 
         // Fetch the specific PR
         await gitService.fetchPR(owner, repo, prNumber, repoPath);
 
-        // Create worktree for the PR
-        const worktreePath = await gitService.ensureWorktree(
-          `pr-${prNumber}`,
+        // Create worktree for the PR using new structure
+        // Format: ~/.highreview/worktrees/{owner}-{repo}/pr-{number}
+        const worktreePath = configService.getWorktreePath(owner, repo, prNumber);
+        await gitService.ensureWorktreeForPR(
+          owner,
+          repo,
+          prNumber,
           pr.headRefOid,
-          repoPath
+          repoPath,
+          worktreePath
         );
 
         // Start project indexing asynchronously (don't wait)
@@ -232,6 +272,42 @@ export async function prRoutes(fastify: FastifyInstance) {
         fastify.log.error(error);
         return reply.code(500).send({
           error: 'Failed to setup review environment',
+          message: error.message,
+        });
+      }
+    }
+  );
+
+  /**
+   * DELETE /api/prs/:owner/:repo/:number/cleanup-review
+   * Clean up worktree and resources for a pull request review
+   */
+  fastify.delete<{ Params: { owner: string; repo: string; number: string } }>(
+    '/api/prs/:owner/:repo/:number/cleanup-review',
+    async (request, reply) => {
+      try {
+        const { owner, repo, number } = request.params;
+        const prNumber = parseInt(number);
+
+        if (isNaN(prNumber)) {
+          return reply.code(400).send({ error: 'Invalid PR number' });
+        }
+
+        // Get worktree path
+        const worktreePath = configService.getWorktreePath(owner, repo, prNumber);
+        const repoPath = configService.getRepoPath(owner, repo);
+
+        // Remove worktree
+        await gitService.removeWorktree(worktreePath, repoPath);
+
+        return reply.send({
+          success: true,
+          message: `Worktree removed: ${worktreePath}`,
+        });
+      } catch (error: any) {
+        fastify.log.error(error);
+        return reply.code(500).send({
+          error: 'Failed to cleanup review environment',
           message: error.message,
         });
       }
@@ -270,12 +346,46 @@ export async function prRoutes(fastify: FastifyInstance) {
         });
       }
 
+      // Get PR details to extract HEAD SHA
+      const prData = await githubService.getPRDetails(owner, repo, prNumber);
+      if (!prData) {
+        return reply.code(404).send({
+          error: 'Pull request not found',
+        });
+      }
+      const headSha = prData.headRefOid;
+
+      // Check if this is a forced re-run
+      const forceRerun = options?.forceRerun === true;
+
+      // Generate options hash for cache key (exclude forceRerun from hash)
+      const { forceRerun: _, ...cacheOptions } = options || {};
+      const optionsHash = JSON.stringify(cacheOptions);
+
+      // If force re-run, delete all existing reviews for this PR
+      if (forceRerun) {
+        const deletedCount = dbService.deleteAllAIReviews(owner, repo, prNumber);
+        console.log(`[PR AI Review] Force re-run: deleted ${deletedCount} existing review(s)`);
+      } else {
+        // Check if cached review exists
+        const cachedReview = dbService.getAIReviewCache(owner, repo, prNumber, headSha, optionsHash);
+        if (cachedReview) {
+          console.log('[PR AI Review] Using cached review from database');
+          return reply.send({
+            success: true,
+            review: cachedReview,
+            cached: true,
+          });
+        }
+      }
+
       // Perform AI review
       console.log('[PR AI Review] Starting review with options:', {
         worktreePath,
         baseBranch,
         language,
-        options: Object.keys(options || {})
+        options: Object.keys(cacheOptions),
+        forceRerun
       });
 
       const reviewResult = await aiReviewService.reviewPR(worktreePath, baseBranch, language, options);
@@ -285,14 +395,73 @@ export async function prRoutes(fastify: FastifyInstance) {
         totalIssues: reviewResult.totalIssues
       });
 
+      // Save to database cache
+      dbService.setAIReviewCache(owner, repo, prNumber, headSha, optionsHash, reviewResult);
+      console.log('[PR AI Review] Saved review to database cache');
+
+      // Clean up old reviews for previous commits
+      const deletedCount = dbService.deleteOldAIReviews(owner, repo, prNumber, headSha);
+      if (deletedCount > 0) {
+        console.log(`[PR AI Review] Cleaned up ${deletedCount} old review(s) for previous commits`);
+      }
+
       return reply.send({
         success: true,
         review: reviewResult,
+        cached: false,
       });
     } catch (error: any) {
       fastify.log.error(error);
       return reply.code(500).send({
         error: 'Failed to perform AI review',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * GET /api/prs/:owner/:repo/:number/ai-review/check
+   * Check if an AI review exists for this PR
+   */
+  fastify.get<{
+    Params: { owner: string; repo: string; number: string };
+    Querystring: { commitSha?: string; optionsHash?: string };
+  }>('/api/prs/:owner/:repo/:number/ai-review/check', async (request, reply) => {
+    try {
+      const { owner, repo, number } = request.params;
+      const { commitSha, optionsHash } = request.query;
+      const prNumber = parseInt(number);
+
+      if (isNaN(prNumber)) {
+        return reply.code(400).send({ error: 'Invalid PR number' });
+      }
+
+      // If commitSha and optionsHash are provided, check for exact match
+      if (commitSha && optionsHash) {
+        const exists = dbService.hasAIReviewCache(owner, repo, prNumber, commitSha, optionsHash);
+        return reply.send({ exists });
+      }
+
+      // Otherwise, check if ANY review exists for this PR
+      const exists = dbService.hasAnyAIReview(owner, repo, prNumber);
+
+      // Also get latest review info if exists
+      let latestReview = null;
+      if (exists) {
+        latestReview = dbService.getLatestAIReview(owner, repo, prNumber);
+      }
+
+      return reply.send({
+        exists,
+        latestReview: latestReview ? {
+          commitSha: latestReview.commitSha,
+          createdAt: latestReview.createdAt,
+        } : null,
+      });
+    } catch (error: any) {
+      fastify.log.error(error);
+      return reply.code(500).send({
+        error: 'Failed to check AI review',
         message: error.message,
       });
     }
@@ -643,6 +812,390 @@ export async function prRoutes(fastify: FastifyInstance) {
       fastify.log.error(error);
       return reply.code(500).send({
         error: 'Failed to remove reaction',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * POST /api/prs/:owner/:repo/:number/search
+   * Search for text across all files in the PR worktree
+   */
+  fastify.post<{
+    Params: { owner: string; repo: string; number: string };
+    Body: {
+      query: string;
+      caseSensitive?: boolean;
+      wholeWord?: boolean;
+      excludeFile?: string;
+      excludeLine?: number;
+    };
+  }>('/api/prs/:owner/:repo/:number/search', async (request, reply) => {
+    try {
+      const { owner, repo, number } = request.params;
+      const { query, caseSensitive = false, wholeWord = false, excludeFile, excludeLine } = request.body;
+      const prNumber = parseInt(number);
+
+      if (isNaN(prNumber)) {
+        return reply.code(400).send({ error: 'Invalid PR number' });
+      }
+
+      if (!query || query.trim().length === 0) {
+        return reply.code(400).send({ error: 'Search query is required' });
+      }
+
+      const worktreePath = configService.getWorktreePath(owner, repo, prNumber);
+
+      // Verify worktree exists
+      const { default: fs } = await import('fs/promises');
+      try {
+        await fs.access(worktreePath);
+      } catch (error) {
+        return reply.code(404).send({
+          error: 'Worktree not found',
+          message: `Worktree for PR #${prNumber} does not exist. Please open the PR review first.`,
+        });
+      }
+
+      // Use ripgrep if available, otherwise fall back to grep
+      const { execa } = await import('execa');
+
+      const results: Array<{
+        file: string;
+        line: number;
+        column: number;
+        text: string;
+      }> = [];
+
+      // Try ripgrep first (faster and better output)
+      let useRipgrep = true;
+      try {
+        await execa('which', ['rg']);
+      } catch {
+        useRipgrep = false;
+        console.log('[Search] ripgrep not found, falling back to grep');
+      }
+
+      try {
+        if (useRipgrep) {
+          // Use ripgrep for fast searching with JSON output
+          const args = ['--json', '--max-count', '1000']; // Limit to 1000 results
+
+          if (!caseSensitive) {
+            args.push('--ignore-case');
+          }
+
+          if (wholeWord) {
+            args.push('--word-regexp');
+          }
+
+          // Add query and search path
+          args.push(query, worktreePath);
+
+          const { stdout } = await execa('rg', args);
+
+          // Parse ripgrep JSON output
+          const lines = stdout.trim().split('\n');
+
+          for (const line of lines) {
+            try {
+              const parsed = JSON.parse(line);
+
+              // Only process "match" type entries
+              if (parsed.type === 'match') {
+                const data = parsed.data;
+                const filePath = data.path.text;
+
+                // Make path relative to worktree
+                const relativePath = filePath.replace(worktreePath + '/', '');
+
+                // Each match can have multiple submatches
+                for (const submatch of data.submatches || []) {
+                  results.push({
+                    file: relativePath,
+                    line: data.line_number,
+                    column: submatch.start + 1, // ripgrep uses 0-based columns
+                    text: data.lines.text.trim(),
+                  });
+                }
+              }
+            } catch (parseError) {
+              // Skip invalid JSON lines
+              continue;
+            }
+          }
+        } else {
+          // Fall back to grep
+          const args = ['-rn']; // recursive, line numbers
+
+          if (!caseSensitive) {
+            args.push('-i');
+          }
+
+          if (wholeWord) {
+            args.push('-w');
+          }
+
+          // Add query and search path
+          args.push(query, worktreePath);
+
+          const { stdout } = await execa('grep', args, { maxBuffer: 10 * 1024 * 1024 }); // 10MB buffer
+
+          // Parse grep output: file:line:text
+          const lines = stdout.trim().split('\n').slice(0, 1000); // Limit to 1000 results
+
+          for (const line of lines) {
+            const match = line.match(/^([^:]+):(\d+):(.*)$/);
+            if (match) {
+              const filePath = match[1];
+              const lineNumber = parseInt(match[2]);
+              const text = match[3];
+
+              // Make path relative to worktree
+              const relativePath = filePath.replace(worktreePath + '/', '');
+
+              // Find column position (0-indexed position of query in text)
+              const searchText = caseSensitive ? text : text.toLowerCase();
+              const searchQuery = caseSensitive ? query : query.toLowerCase();
+              const columnIndex = searchText.indexOf(searchQuery);
+
+              results.push({
+                file: relativePath,
+                line: lineNumber,
+                column: columnIndex >= 0 ? columnIndex + 1 : 1,
+                text: text.trim(),
+              });
+            }
+          }
+        }
+
+        // Filter out the current file's current line if excludeFile and excludeLine are provided
+        let filteredResults = results;
+        if (excludeFile && excludeLine !== undefined) {
+          filteredResults = results.filter(
+            (result) => !(result.file === excludeFile && result.line === excludeLine)
+          );
+          console.log(`[Search] Filtered out current position: ${excludeFile}:${excludeLine}`);
+          console.log(`[Search] Results before filter: ${results.length}, after filter: ${filteredResults.length}`);
+        }
+
+        return reply.send({
+          query,
+          resultCount: filteredResults.length,
+          results: filteredResults,
+          truncated: results.length >= 1000,
+        });
+      } catch (error: any) {
+        // grep/ripgrep returns exit code 1 when no matches found
+        if (error.exitCode === 1) {
+          return reply.send({
+            query,
+            resultCount: 0,
+            results: [],
+            truncated: false,
+          });
+        }
+
+        throw error;
+      }
+    } catch (error: any) {
+      fastify.log.error(error);
+      return reply.code(500).send({
+        error: 'Failed to search in project',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * POST /api/code-analysis/definition
+   * Find definition using Tree-sitter
+   */
+  fastify.post<{
+    Body: {
+      worktreePath: string;
+      filePath: string;
+      line: number;
+      column: number;
+    };
+  }>('/api/code-analysis/definition', async (request, reply) => {
+    try {
+      const { worktreePath, filePath, line, column } = request.body;
+
+      if (!worktreePath || !filePath || !line || !column) {
+        return reply.code(400).send({
+          error: 'Invalid request',
+          message: 'worktreePath, filePath, line, and column are required',
+        });
+      }
+
+      console.log('[Code Analysis] Finding definition:', { filePath, line, column });
+
+      const contextAnalyzer = new ContextAnalyzer();
+      const result = await contextAnalyzer.findDefinition(filePath, line, column, worktreePath);
+
+      return reply.send({
+        success: true,
+        ...result,
+      });
+    } catch (error: any) {
+      fastify.log.error(error);
+      return reply.code(500).send({
+        error: 'Failed to find definition',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * POST /api/code-analysis/references
+   * Find references using Tree-sitter + ripgrep
+   */
+  fastify.post<{
+    Body: {
+      worktreePath: string;
+      filePath: string;
+      line: number;
+      column: number;
+    };
+  }>('/api/code-analysis/references', async (request, reply) => {
+    try {
+      const { worktreePath, filePath, line, column } = request.body;
+
+      if (!worktreePath || !filePath || !line || !column) {
+        return reply.code(400).send({
+          error: 'Invalid request',
+          message: 'worktreePath, filePath, line, and column are required',
+        });
+      }
+
+      console.log('[Code Analysis] Finding references:', { filePath, line, column });
+
+      const contextAnalyzer = new ContextAnalyzer();
+
+      // Get symbol at position
+      const symbol = await contextAnalyzer.getSymbolAtPosition(
+        `${worktreePath}/${filePath}`,
+        line,
+        column
+      );
+
+      if (!symbol) {
+        return reply.send({
+          success: true,
+          locations: [],
+          symbolName: '',
+        });
+      }
+
+      // Find references using existing method
+      const modifiedSymbol = {
+        name: symbol.name,
+        type: 'function' as const,
+        file: filePath,
+        line: line,
+      };
+
+      const references = await contextAnalyzer['findReferences'](modifiedSymbol, worktreePath);
+
+      const locations = references.map(ref => ({
+        file: ref.file,
+        line: ref.line,
+        column: ref.column,
+        name: symbol.name,
+        type: 'function' as const,
+        context: ref.context,
+      }));
+
+      return reply.send({
+        success: true,
+        locations,
+        symbolName: symbol.name,
+      });
+    } catch (error: any) {
+      fastify.log.error(error);
+      return reply.code(500).send({
+        error: 'Failed to find references',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * POST /api/code-analysis/type-definition
+   * Find type definition using Tree-sitter
+   */
+  fastify.post<{
+    Body: {
+      worktreePath: string;
+      filePath: string;
+      line: number;
+      column: number;
+    };
+  }>('/api/code-analysis/type-definition', async (request, reply) => {
+    try {
+      const { worktreePath, filePath, line, column } = request.body;
+
+      if (!worktreePath || !filePath || !line || !column) {
+        return reply.code(400).send({
+          error: 'Invalid request',
+          message: 'worktreePath, filePath, line, and column are required',
+        });
+      }
+
+      console.log('[Code Analysis] Finding type definition:', { filePath, line, column });
+
+      const contextAnalyzer = new ContextAnalyzer();
+      const result = await contextAnalyzer.findTypeDefinition(filePath, line, column, worktreePath);
+
+      return reply.send({
+        success: true,
+        ...result,
+      });
+    } catch (error: any) {
+      fastify.log.error(error);
+      return reply.code(500).send({
+        error: 'Failed to find type definition',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * POST /api/code-analysis/implementations
+   * Find implementations using Tree-sitter
+   */
+  fastify.post<{
+    Body: {
+      worktreePath: string;
+      filePath: string;
+      line: number;
+      column: number;
+    };
+  }>('/api/code-analysis/implementations', async (request, reply) => {
+    try {
+      const { worktreePath, filePath, line, column } = request.body;
+
+      if (!worktreePath || !filePath || !line || !column) {
+        return reply.code(400).send({
+          error: 'Invalid request',
+          message: 'worktreePath, filePath, line, and column are required',
+        });
+      }
+
+      console.log('[Code Analysis] Finding implementations:', { filePath, line, column });
+
+      const contextAnalyzer = new ContextAnalyzer();
+      const result = await contextAnalyzer.findImplementations(filePath, line, column, worktreePath);
+
+      return reply.send({
+        success: true,
+        ...result,
+      });
+    } catch (error: any) {
+      fastify.log.error(error);
+      return reply.code(500).send({
+        error: 'Failed to find implementations',
         message: error.message,
       });
     }

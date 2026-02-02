@@ -51,8 +51,28 @@ export interface Repository {
   fullName: string;
   cronSchedule: string | null;
   autoReview: boolean;
+  aiReviewOptions?: string | null; // JSON string of AI review options
   createdAt: number;
   updatedAt: number;
+}
+
+export interface AutoReviewHistory {
+  id: string;
+  repositoryId: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  prTitle: string;
+  status: 'success' | 'failed' | 'partial';
+  options: string; // JSON string of AI review options used
+  filesReviewed: string; // JSON array of file paths
+  summary: string; // AI review summary
+  issueCount: number;
+  criticalCount: number;
+  warningCount: number;
+  suggestionCount: number;
+  executedAt: number;
+  error?: string | null;
 }
 
 export class DatabaseService {
@@ -76,6 +96,14 @@ export class DatabaseService {
       DatabaseService.instance = new DatabaseService();
     }
     return DatabaseService.instance;
+  }
+
+  /**
+   * Get database instance for direct access
+   * Used by services that need to execute custom queries
+   */
+  public getDatabase(): Database.Database {
+    return this.db;
   }
 
   private initializeTables() {
@@ -139,11 +167,24 @@ export class DatabaseService {
         fullName TEXT NOT NULL,
         cronSchedule TEXT,
         autoReview INTEGER NOT NULL DEFAULT 0,
+        aiReviewOptions TEXT,
         createdAt INTEGER NOT NULL,
         updatedAt INTEGER NOT NULL,
         UNIQUE(owner, name)
       )
     `);
+
+    // Migration: Add aiReviewOptions column if it doesn't exist
+    try {
+      const columns = this.db.pragma('table_info(repositories)') as Array<{ name: string; [key: string]: any }>;
+      const hasAIReviewOptions = columns.some((col) => col.name === 'aiReviewOptions');
+      if (!hasAIReviewOptions) {
+        this.db.exec('ALTER TABLE repositories ADD COLUMN aiReviewOptions TEXT');
+        console.log('[Database] Added aiReviewOptions column to repositories table');
+      }
+    } catch (error) {
+      console.error('[Database] Failed to add aiReviewOptions column:', error);
+    }
 
     // Create settings table
     this.db.exec(`
@@ -166,6 +207,83 @@ export class DatabaseService {
         reviewData TEXT NOT NULL,
         createdAt INTEGER NOT NULL,
         UNIQUE(owner, repo, prNumber, commitSha, optionsHash)
+      )
+    `);
+
+    // Create code index table for repository-level symbol indexing
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS code_index (
+        id TEXT PRIMARY KEY,
+        repoPath TEXT NOT NULL,
+        filePath TEXT NOT NULL,
+        symbolName TEXT NOT NULL,
+        symbolKind TEXT NOT NULL,
+        symbolType TEXT,
+        line INTEGER NOT NULL,
+        column INTEGER NOT NULL,
+        endLine INTEGER,
+        endColumn INTEGER,
+        containerName TEXT,
+        documentation TEXT,
+        signature TEXT,
+        language TEXT NOT NULL,
+        fileHash TEXT NOT NULL,
+        indexedAt INTEGER NOT NULL,
+        UNIQUE(repoPath, filePath, symbolName, line, column)
+      )
+    `);
+
+    // Create symbol references table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS symbol_references (
+        id TEXT PRIMARY KEY,
+        repoPath TEXT NOT NULL,
+        symbolId TEXT NOT NULL,
+        referencePath TEXT NOT NULL,
+        line INTEGER NOT NULL,
+        column INTEGER NOT NULL,
+        endLine INTEGER,
+        endColumn INTEGER,
+        isDefinition INTEGER NOT NULL DEFAULT 0,
+        indexedAt INTEGER NOT NULL,
+        FOREIGN KEY (symbolId) REFERENCES code_index(id) ON DELETE CASCADE
+      )
+    `);
+
+
+
+    // Create file metadata table for incremental updates
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS file_metadata (
+        repoPath TEXT NOT NULL,
+        filePath TEXT NOT NULL,
+        fileHash TEXT NOT NULL,
+        lastModified INTEGER NOT NULL,
+        lastIndexed INTEGER NOT NULL,
+        PRIMARY KEY (repoPath, filePath)
+      )
+    `);
+
+    // Create auto review history table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS auto_review_history (
+        id TEXT PRIMARY KEY,
+        repositoryId TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        prNumber INTEGER NOT NULL,
+        prTitle TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('success', 'failed', 'partial')),
+        options TEXT NOT NULL,
+        filesReviewed TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        issueCount INTEGER NOT NULL DEFAULT 0,
+        criticalCount INTEGER NOT NULL DEFAULT 0,
+        warningCount INTEGER NOT NULL DEFAULT 0,
+        suggestionCount INTEGER NOT NULL DEFAULT 0,
+        executedAt INTEGER NOT NULL,
+        error TEXT,
+        FOREIGN KEY (repositoryId) REFERENCES repositories(id) ON DELETE CASCADE
       )
     `);
 
@@ -193,6 +311,47 @@ export class DatabaseService {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_ai_cache_lookup
       ON ai_review_cache(owner, repo, prNumber, commitSha, optionsHash)
+    `);
+
+    // Indexes for code indexing
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_code_index_symbol
+      ON code_index(repoPath, symbolName)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_code_index_file
+      ON code_index(repoPath, filePath)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_code_index_kind
+      ON code_index(repoPath, symbolKind)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_symbol_references_symbol
+      ON symbol_references(symbolId)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_symbol_references_file
+      ON symbol_references(repoPath, referencePath)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_file_metadata_hash
+      ON file_metadata(repoPath, fileHash)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_auto_review_history_repo
+      ON auto_review_history(repositoryId, executedAt DESC)
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_auto_review_history_pr
+      ON auto_review_history(owner, repo, prNumber)
     `);
   }
 
@@ -444,15 +603,23 @@ export class DatabaseService {
   }
 
   /**
+   * Parse repository row from database
+   */
+  private parseRepositoryRow(row: any): Repository {
+    return {
+      ...row,
+      autoReview: Boolean(row.autoReview),
+      aiReviewOptions: row.aiReviewOptions ? row.aiReviewOptions : null,
+    };
+  }
+
+  /**
    * Get all repositories
    */
   getAllRepositories(): Repository[] {
     const stmt = this.db.prepare('SELECT * FROM repositories ORDER BY createdAt DESC');
     const rows = stmt.all() as any[];
-    return rows.map(row => ({
-      ...row,
-      autoReview: Boolean(row.autoReview),
-    }));
+    return rows.map(row => this.parseRepositoryRow(row));
   }
 
   /**
@@ -462,10 +629,7 @@ export class DatabaseService {
     const stmt = this.db.prepare('SELECT * FROM repositories WHERE id = ?');
     const row = stmt.get(id) as any;
     if (!row) return null;
-    return {
-      ...row,
-      autoReview: Boolean(row.autoReview),
-    };
+    return this.parseRepositoryRow(row);
   }
 
   /**
@@ -475,10 +639,7 @@ export class DatabaseService {
     const stmt = this.db.prepare('SELECT * FROM repositories WHERE owner = ? AND name = ?');
     const row = stmt.get(owner, name) as any;
     if (!row) return null;
-    return {
-      ...row,
-      autoReview: Boolean(row.autoReview),
-    };
+    return this.parseRepositoryRow(row);
   }
 
   /**
@@ -503,6 +664,7 @@ export class DatabaseService {
       fullName,
       cronSchedule: null,
       autoReview: false,
+      aiReviewOptions: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -531,15 +693,102 @@ export class DatabaseService {
   }
 
   /**
+   * Update AI review options for a repository
+   */
+  updateAIReviewOptions(id: string, options: any): boolean {
+    const stmt = this.db.prepare(`
+      UPDATE repositories
+      SET aiReviewOptions = ?, updatedAt = ?
+      WHERE id = ?
+    `);
+    const optionsJson = options ? JSON.stringify(options) : null;
+    const result = stmt.run(optionsJson, Date.now(), id);
+    return result.changes > 0;
+  }
+
+  /**
    * Get repositories with auto review enabled
    */
   getAutoReviewRepositories(): Repository[] {
     const stmt = this.db.prepare('SELECT * FROM repositories WHERE autoReview = 1');
     const rows = stmt.all() as any[];
-    return rows.map(row => ({
-      ...row,
-      autoReview: Boolean(row.autoReview),
-    }));
+    return rows.map(row => this.parseRepositoryRow(row));
+  }
+
+  /**
+   * Save auto review history
+   */
+  saveAutoReviewHistory(history: Omit<AutoReviewHistory, 'id'>): AutoReviewHistory {
+    const id = `${history.repositoryId}-${history.prNumber}-${Date.now()}`;
+    const stmt = this.db.prepare(`
+      INSERT INTO auto_review_history (
+        id, repositoryId, owner, repo, prNumber, prTitle, status, options,
+        filesReviewed, summary, issueCount, criticalCount, warningCount,
+        suggestionCount, executedAt, error
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      id,
+      history.repositoryId,
+      history.owner,
+      history.repo,
+      history.prNumber,
+      history.prTitle,
+      history.status,
+      history.options,
+      history.filesReviewed,
+      history.summary,
+      history.issueCount,
+      history.criticalCount,
+      history.warningCount,
+      history.suggestionCount,
+      history.executedAt,
+      history.error || null
+    );
+
+    return { id, ...history };
+  }
+
+  /**
+   * Get all auto review history (ordered by most recent first)
+   */
+  getAutoReviewHistory(limit: number = 100): AutoReviewHistory[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM auto_review_history
+      ORDER BY executedAt DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(limit) as any[];
+    return rows;
+  }
+
+  /**
+   * Get auto review history for a specific repository
+   */
+  getAutoReviewHistoryByRepository(repositoryId: string, limit: number = 50): AutoReviewHistory[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM auto_review_history
+      WHERE repositoryId = ?
+      ORDER BY executedAt DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(repositoryId, limit) as any[];
+    return rows;
+  }
+
+  /**
+   * Get auto review history for a specific PR
+   */
+  getAutoReviewHistoryByPR(owner: string, repo: string, prNumber: number): AutoReviewHistory[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM auto_review_history
+      WHERE owner = ? AND repo = ? AND prNumber = ?
+      ORDER BY executedAt DESC
+    `);
+    const rows = stmt.all(owner, repo, prNumber) as any[];
+    return rows;
   }
 
   /**
@@ -633,6 +882,350 @@ export class DatabaseService {
     `);
     const row = stmt.get(owner, repo, prNumber, commitSha, optionsHash);
     return row !== undefined;
+  }
+
+  /**
+   * Check if any AI review exists for a PR (regardless of commit or options)
+   */
+  hasAnyAIReview(owner: string, repo: string, prNumber: number): boolean {
+    const stmt = this.db.prepare(`
+      SELECT 1 FROM ai_review_cache
+      WHERE owner = ? AND repo = ? AND prNumber = ?
+      LIMIT 1
+    `);
+    const row = stmt.get(owner, repo, prNumber);
+    return row !== undefined;
+  }
+
+  /**
+   * Get latest AI review for a PR (most recent by createdAt)
+   */
+  getLatestAIReview(owner: string, repo: string, prNumber: number): any | null {
+    const stmt = this.db.prepare(`
+      SELECT reviewData, commitSha, optionsHash, createdAt
+      FROM ai_review_cache
+      WHERE owner = ? AND repo = ? AND prNumber = ?
+      ORDER BY createdAt DESC
+      LIMIT 1
+    `);
+    const row = stmt.get(owner, repo, prNumber) as any;
+    return row ? {
+      review: JSON.parse(row.reviewData),
+      commitSha: row.commitSha,
+      optionsHash: row.optionsHash,
+      createdAt: row.createdAt,
+    } : null;
+  }
+
+  /**
+   * Delete old AI reviews for a PR (keep only the current commit)
+   * Used to clean up outdated reviews when a new commit is added to the PR
+   */
+  deleteOldAIReviews(owner: string, repo: string, prNumber: number, currentCommitSha: string): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM ai_review_cache
+      WHERE owner = ? AND repo = ? AND prNumber = ? AND commitSha != ?
+    `);
+    const result = stmt.run(owner, repo, prNumber, currentCommitSha);
+    return result.changes;
+  }
+
+  /**
+   * Delete all AI reviews for a specific PR
+   * Used when re-running AI review to ensure fresh results
+   */
+  deleteAllAIReviews(owner: string, repo: string, prNumber: number): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM ai_review_cache
+      WHERE owner = ? AND repo = ? AND prNumber = ?
+    `);
+    const result = stmt.run(owner, repo, prNumber);
+    return result.changes;
+  }
+
+  // ============================================================================
+  // Language Settings Methods
+  // ============================================================================
+
+  /**
+   * Get all language settings
+   */
+
+
+  // ============================================================================
+  // Code Indexing Methods
+  // ============================================================================
+
+  /**
+   * Save or update code symbols in the index
+   */
+  saveCodeSymbols(symbols: Array<{
+    id: string;
+    repoPath: string;
+    filePath: string;
+    symbolName: string;
+    symbolKind: string;
+    symbolType?: string;
+    line: number;
+    column: number;
+    endLine?: number;
+    endColumn?: number;
+    containerName?: string;
+    documentation?: string;
+    signature?: string;
+    language: string;
+    fileHash: string;
+  }>): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO code_index (
+        id, repoPath, filePath, symbolName, symbolKind, symbolType,
+        line, column, endLine, endColumn, containerName, documentation,
+        signature, language, fileHash, indexedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(repoPath, filePath, symbolName, line, column) DO UPDATE SET
+        symbolKind = excluded.symbolKind,
+        symbolType = excluded.symbolType,
+        endLine = excluded.endLine,
+        endColumn = excluded.endColumn,
+        containerName = excluded.containerName,
+        documentation = excluded.documentation,
+        signature = excluded.signature,
+        fileHash = excluded.fileHash,
+        indexedAt = excluded.indexedAt
+    `);
+
+    const insertMany = this.db.transaction((symbols: any[]) => {
+      for (const symbol of symbols) {
+        stmt.run(
+          symbol.id,
+          symbol.repoPath,
+          symbol.filePath,
+          symbol.symbolName,
+          symbol.symbolKind,
+          symbol.symbolType || null,
+          symbol.line,
+          symbol.column,
+          symbol.endLine || null,
+          symbol.endColumn || null,
+          symbol.containerName || null,
+          symbol.documentation || null,
+          symbol.signature || null,
+          symbol.language,
+          symbol.fileHash,
+          Date.now()
+        );
+      }
+    });
+
+    insertMany(symbols);
+  }
+
+  /**
+   * Save symbol references
+   */
+  saveSymbolReferences(references: Array<{
+    id: string;
+    repoPath: string;
+    symbolId: string;
+    referencePath: string;
+    line: number;
+    column: number;
+    endLine?: number;
+    endColumn?: number;
+    isDefinition: boolean;
+  }>): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO symbol_references (
+        id, repoPath, symbolId, referencePath, line, column,
+        endLine, endColumn, isDefinition, indexedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        line = excluded.line,
+        column = excluded.column,
+        endLine = excluded.endLine,
+        endColumn = excluded.endColumn,
+        isDefinition = excluded.isDefinition,
+        indexedAt = excluded.indexedAt
+    `);
+
+    const insertMany = this.db.transaction((references: any[]) => {
+      for (const ref of references) {
+        stmt.run(
+          ref.id,
+          ref.repoPath,
+          ref.symbolId,
+          ref.referencePath,
+          ref.line,
+          ref.column,
+          ref.endLine || null,
+          ref.endColumn || null,
+          ref.isDefinition ? 1 : 0,
+          Date.now()
+        );
+      }
+    });
+
+    insertMany(references);
+  }
+
+  /**
+   * Update file metadata for incremental indexing
+   */
+  updateFileMetadata(repoPath: string, filePath: string, fileHash: string, lastModified: number): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO file_metadata (repoPath, filePath, fileHash, lastModified, lastIndexed)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(repoPath, filePath) DO UPDATE SET
+        fileHash = excluded.fileHash,
+        lastModified = excluded.lastModified,
+        lastIndexed = excluded.lastIndexed
+    `);
+    stmt.run(repoPath, filePath, fileHash, lastModified, Date.now());
+  }
+
+  /**
+   * Get file metadata
+   */
+  getFileMetadata(repoPath: string, filePath: string): { fileHash: string; lastModified: number; lastIndexed: number } | null {
+    const stmt = this.db.prepare(`
+      SELECT fileHash, lastModified, lastIndexed
+      FROM file_metadata
+      WHERE repoPath = ? AND filePath = ?
+    `);
+    return stmt.get(repoPath, filePath) as any;
+  }
+
+  /**
+   * Find symbol definitions by name
+   */
+  findSymbolDefinitions(repoPath: string, symbolName: string): Array<any> {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM code_index
+      WHERE repoPath = ? AND symbolName = ?
+      ORDER BY filePath, line
+    `);
+    return stmt.all(repoPath, symbolName);
+  }
+
+  /**
+   * Find symbols in a file
+   */
+  findSymbolsInFile(repoPath: string, filePath: string): Array<any> {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM code_index
+      WHERE repoPath = ? AND filePath = ?
+      ORDER BY line, column
+    `);
+    return stmt.all(repoPath, filePath);
+  }
+
+  /**
+   * Find symbol by location
+   */
+  findSymbolAtLocation(repoPath: string, filePath: string, line: number, column: number): any | null {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM code_index
+      WHERE repoPath = ? AND filePath = ? AND line <= ? AND (endLine IS NULL OR endLine >= ?)
+      ORDER BY ABS(line - ?) + ABS(column - ?)
+      LIMIT 1
+    `);
+    return stmt.get(repoPath, filePath, line, line, line, column);
+  }
+
+  /**
+   * Find all references to a symbol
+   */
+  findSymbolReferences(repoPath: string, symbolId: string): Array<any> {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM symbol_references
+      WHERE repoPath = ? AND symbolId = ?
+      ORDER BY referencePath, line, column
+    `);
+    return stmt.all(repoPath, symbolId);
+  }
+
+  /**
+   * Delete index for a file (for re-indexing)
+   */
+  deleteFileIndex(repoPath: string, filePath: string): void {
+    const deleteSymbols = this.db.prepare(`
+      DELETE FROM code_index
+      WHERE repoPath = ? AND filePath = ?
+    `);
+
+    const deleteRefs = this.db.prepare(`
+      DELETE FROM symbol_references
+      WHERE repoPath = ? AND referencePath = ?
+    `);
+
+    const transaction = this.db.transaction(() => {
+      deleteSymbols.run(repoPath, filePath);
+      deleteRefs.run(repoPath, filePath);
+    });
+
+    transaction();
+  }
+
+  /**
+   * Delete entire index for a repository
+   */
+  deleteRepositoryIndex(repoPath: string): void {
+    const deleteSymbols = this.db.prepare(`
+      DELETE FROM code_index WHERE repoPath = ?
+    `);
+
+    const deleteRefs = this.db.prepare(`
+      DELETE FROM symbol_references WHERE repoPath = ?
+    `);
+
+    const deleteMeta = this.db.prepare(`
+      DELETE FROM file_metadata WHERE repoPath = ?
+    `);
+
+    const transaction = this.db.transaction(() => {
+      deleteSymbols.run(repoPath);
+      deleteRefs.run(repoPath);
+      deleteMeta.run(repoPath);
+    });
+
+    transaction();
+  }
+
+  /**
+   * Get indexing statistics for a repository
+   */
+  getIndexStats(repoPath: string): {
+    totalSymbols: number;
+    totalReferences: number;
+    totalFiles: number;
+    lastIndexed: number | null;
+  } {
+    const symbolCount = this.db.prepare(`
+      SELECT COUNT(*) as count FROM code_index WHERE repoPath = ?
+    `).get(repoPath) as any;
+
+    const refCount = this.db.prepare(`
+      SELECT COUNT(*) as count FROM symbol_references WHERE repoPath = ?
+    `).get(repoPath) as any;
+
+    const fileCount = this.db.prepare(`
+      SELECT COUNT(*) as count FROM file_metadata WHERE repoPath = ?
+    `).get(repoPath) as any;
+
+    const lastIndexed = this.db.prepare(`
+      SELECT MAX(lastIndexed) as lastIndexed FROM file_metadata WHERE repoPath = ?
+    `).get(repoPath) as any;
+
+    return {
+      totalSymbols: symbolCount.count,
+      totalReferences: refCount.count,
+      totalFiles: fileCount.count,
+      lastIndexed: lastIndexed.lastIndexed,
+    };
   }
 
   /**

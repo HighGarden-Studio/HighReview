@@ -37,7 +37,7 @@ export async function searchSymbols(
       query
     });
 
-    const response = await fetch(`http://localhost:8765/api/index/search?${params}`);
+    const response = await fetch(`/api/index/search?${params}`);
 
     if (!response.ok) {
       console.error('[IndexedSymbols] Search failed:', response.status);
@@ -67,7 +67,7 @@ export async function getFileSymbols(
       filePath
     });
 
-    const response = await fetch(`http://localhost:8765/api/index/file-symbols?${params}`);
+    const response = await fetch(`/api/index/file-symbols?${params}`);
 
     if (!response.ok) {
       console.error('[IndexedSymbols] Get file symbols failed:', response.status);
@@ -95,7 +95,7 @@ export async function getIndexStatus(
       branch
     });
 
-    const response = await fetch(`http://localhost:8765/api/index/status?${params}`);
+    const response = await fetch(`/api/index/status?${params}`);
 
     if (!response.ok) {
       return null;
@@ -121,7 +121,7 @@ export async function checkIndexingNeeded(
       branch
     });
 
-    const response = await fetch(`http://localhost:8765/api/index/check?${params}`);
+    const response = await fetch(`/api/index/check?${params}`);
 
     if (!response.ok) {
       return true;
@@ -143,7 +143,7 @@ export async function triggerIndexing(
   branch: string
 ): Promise<boolean> {
   try {
-    const response = await fetch('http://localhost:8765/api/index/start', {
+    const response = await fetch('/api/index/start', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'

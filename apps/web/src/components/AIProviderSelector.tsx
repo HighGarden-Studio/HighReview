@@ -4,11 +4,13 @@ interface AIProvider {
   name: string;
   available: boolean;
   instructions: string;
+  models?: string[];
 }
 
 interface AIProvidersResponse {
   providers: Record<string, AIProvider>;
   selected: string | null;
+  selectedModel: string | null;
 }
 
 interface AIProviderSelectorProps {
@@ -19,6 +21,7 @@ interface AIProviderSelectorProps {
 export function AIProviderSelector({ onProviderSelected, compact = false }: AIProviderSelectorProps) {
   const [providers, setProviders] = useState<Record<string, AIProvider>>({});
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +35,7 @@ export function AIProviderSelector({ onProviderSelected, compact = false }: AIPr
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:8765/api/ai/providers');
+      const response = await fetch('/api/ai/providers');
       if (!response.ok) {
         throw new Error(`Failed to load providers: ${response.statusText}`);
       }
@@ -40,8 +43,7 @@ export function AIProviderSelector({ onProviderSelected, compact = false }: AIPr
       const data: AIProvidersResponse = await response.json();
       setProviders(data.providers);
       setSelectedProvider(data.selected);
-
-      console.log('[AIProviderSelector] Loaded providers:', data);
+      setSelectedModel(data.selectedModel);
     } catch (err: any) {
       console.error('[AIProviderSelector] Error:', err);
       setError(err.message);
@@ -50,7 +52,7 @@ export function AIProviderSelector({ onProviderSelected, compact = false }: AIPr
     }
   };
 
-  const selectProvider = async (providerId: string) => {
+  const selectProvider = async (providerId: string, model?: string) => {
     if (!providers[providerId]?.available) {
       alert(`${providers[providerId]?.name || providerId} is not installed.\n\n${providers[providerId]?.instructions}`);
       return;
@@ -59,14 +61,17 @@ export function AIProviderSelector({ onProviderSelected, compact = false }: AIPr
     setSaving(true);
     setError(null);
 
+    const targetModel = model || (providerId === selectedProvider ? selectedModel : providers[providerId].models?.[0]);
+
     try {
-      const response = await fetch('http://localhost:8765/api/ai/config', {
+      const response = await fetch('/api/ai/config', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           provider: providerId,
+          model: targetModel,
         }),
       });
 
@@ -78,6 +83,7 @@ export function AIProviderSelector({ onProviderSelected, compact = false }: AIPr
       console.log('[AIProviderSelector] Provider set:', data);
 
       setSelectedProvider(providerId);
+      setSelectedModel(targetModel || null);
 
       if (onProviderSelected) {
         onProviderSelected(providerId);
@@ -135,6 +141,22 @@ export function AIProviderSelector({ onProviderSelected, compact = false }: AIPr
             </option>
           ))}
         </select>
+        
+        {/* Model Selector for Compact View if Selected Provider has Models */}
+        {selectedProvider && providers[selectedProvider]?.models && providers[selectedProvider].models!.length > 0 && (
+          <select
+            value={selectedModel || ''}
+            onChange={(e) => selectProvider(selectedProvider, e.target.value)}
+            disabled={saving}
+            className="ml-2 px-3 py-1.5 text-sm rounded-lg border border-light-border dark:border-dark-border bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-light-accent-primary dark:focus:ring-dark-accent-primary disabled:opacity-50"
+          >
+            {providers[selectedProvider].models!.map(model => (
+              <option key={model} value={model}>
+                {model}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
     );
   }
@@ -206,6 +228,26 @@ export function AIProviderSelector({ onProviderSelected, compact = false }: AIPr
                   {provider.available ? 'Installed' : 'Not Installed'}
                 </span>
               </div>
+
+              {provider.models && provider.models.length > 0 && provider.available && (
+                <div className="mt-3" onClick={(e) => e.stopPropagation()}>
+                  <label className="block text-xs text-light-text-secondary dark:text-dark-text-secondary font-medium mb-1">
+                    Model
+                  </label>
+                  <select
+                    value={isSelected ? (selectedModel || '') : (provider.models[0] || '')}
+                    onChange={(e) => isSelected && selectProvider(id, e.target.value)}
+                    disabled={!isSelected || saving}
+                    className="w-full px-2 py-1 text-xs rounded border border-light-border dark:border-dark-border bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary focus:outline-none focus:ring-1 focus:ring-light-accent-primary dark:focus:ring-dark-accent-primary disabled:opacity-50"
+                  >
+                    {provider.models.map(model => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {!provider.available && (
                 <div className="mt-3 p-2 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated">

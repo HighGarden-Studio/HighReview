@@ -147,26 +147,42 @@ export async function fsRoutes(fastify: FastifyInstance) {
 
       // Try to get original content from git, fallback to GitHub API
       try {
+        console.log(`[DiffAPI] Attempting to fetch original content from git:`, {
+          repoRoot,
+          baseBranch,
+          filePath,
+        });
         originalContent = await fsService.getFileContentFromGit(
           repoRoot,
           baseBranch,
           filePath
         );
-      } catch (error) {
+        console.log(`[DiffAPI] ✓ Successfully fetched original content from git (${originalContent.length} bytes)`);
+      } catch (error: any) {
+        console.log(`[DiffAPI] ✗ Failed to fetch original content from git:`, error.message);
         // If local git fails but we have GitHub info, try fetching from GitHub
         if (owner && repo) {
           try {
             originalContent = await githubService.getFileContentFromGitHub(owner, repo, filePath, baseBranch);
-            console.log(`[DiffAPI] Fetched original content from GitHub API`);
-          } catch (ghError) {
+            console.log(`[DiffAPI] ✓ Fetched original content from GitHub API (${originalContent.length} bytes)`);
+          } catch (ghError: any) {
             // File might be new in PR or deleted in base
-            console.log(`[DiffAPI] File not found in base branch: ${filePath}`);
+            console.log(`[DiffAPI] ✗ File not found in base branch: ${filePath} - ${ghError.message}`);
             originalContent = '';
           }
         } else {
+          console.log(`[DiffAPI] No GitHub info for fallback, setting original to empty`);
           originalContent = '';
         }
       }
+
+      console.log(`[DiffAPI] Final diff response:`, {
+        filePath,
+        hasOriginal: !!originalContent,
+        originalLength: originalContent.length,
+        hasModified: !!modifiedContent,
+        modifiedLength: modifiedContent.length,
+      });
 
       return reply.send({
         filePath,

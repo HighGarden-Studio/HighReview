@@ -85,7 +85,7 @@ export function MentionAutocomplete({
   if (filteredSuggestions.length === 0) {
     return (
       <div
-        className="absolute z-50 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg p-3"
+        className="fixed z-50 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg p-3"
         style={{ top: position.top, left: position.left }}
       >
         <p className="text-sm text-light-text-muted dark:text-dark-text-muted">
@@ -98,7 +98,7 @@ export function MentionAutocomplete({
   return (
     <div
       ref={containerRef}
-      className="absolute z-50 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg max-h-64 overflow-y-auto"
+      className="fixed z-50 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg max-h-64 overflow-y-auto"
       style={{ top: position.top, left: position.left, minWidth: '300px' }}
     >
       {filteredSuggestions.map((suggestion, index) => (

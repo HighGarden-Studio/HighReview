@@ -13,7 +13,10 @@ import { aiRoutes } from './routes/ai.routes.js';
 import { indexRoutes } from './routes/index.routes.js';
 import { repositoriesRoutes } from './routes/repositories.routes.js';
 import { settingsRoutes } from './routes/settings.routes.js';
+import { indexingRoutes } from './routes/indexing.routes.js';
 import { CronService } from './services/CronService.js';
+import { getFileWatcherService } from './services/FileWatcherService.js';
+import { DatabaseService } from './services/DatabaseService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -67,10 +70,15 @@ export async function startServer(port: number) {
   // Settings 라우트 등록
   await fastify.register(settingsRoutes);
 
+  // Indexing 라우트 등록
+  await fastify.register(indexingRoutes);
+
   // Initialize cron jobs
   const cronService = CronService.getInstance();
   await cronService.initializeJobs();
   console.log(`[Server] Initialized ${cronService.getActiveJobsCount()} cron jobs`);
+
+
 
   // 프로덕션 모드에서 빌드된 프론트엔드 정적 파일 서빙
   const publicPath = join(__dirname, '..', 'public');
@@ -91,5 +99,33 @@ export async function startServer(port: number) {
   }
 
   await fastify.listen({ port, host: '0.0.0.0' });
+
+  // Increase timeout for long-running AI requests (60 minutes for slow local LLMs)
+  fastify.server.setTimeout(3600000);
+
+  // Graceful shutdown handling
+  const gracefulShutdown = async (signal: string) => {
+    console.log(`[Server] Received ${signal}, starting graceful shutdown...`);
+
+    try {
+      // Stop all file watchers
+      const watcherService = getFileWatcherService();
+      await watcherService.stopAll();
+      console.log('[Server] Stopped all file watchers');
+
+      // Close Fastify server
+      await fastify.close();
+      console.log('[Server] Server closed successfully');
+
+      process.exit(0);
+    } catch (error) {
+      console.error('[Server] Error during shutdown:', error);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
   return fastify;
 }

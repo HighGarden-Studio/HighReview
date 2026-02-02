@@ -55,6 +55,7 @@ let activeConnections: Map<LanguageId, WebSocket> = new Map();
  */
 export function initializeMonacoServices() {
   // Monaco services initialization is now handled internally by monaco-languageclient v10+
+  // Language registration is done in monacoSetup.ts (called from main.tsx)
   console.log('[LSP] Monaco services ready');
 }
 
@@ -129,32 +130,54 @@ async function startLanguageClientForLanguage(
               quotePreference: 'single',
             },
           },
-        },
-        connectionProvider: {
-          get: () => {
-            return Promise.resolve({ reader, writer });
+          // Enable synchronization logging
+          synchronize: {
+            fileEvents: undefined
           },
+        },
+        // New API for v10: provide MessageTransports directly
+        messageTransports: {
+          reader,
+          writer,
         },
       });
 
-      client.start();
+      console.log(`[LSP Client] ${language} client created with documentSelector:`, config.documentSelector);
+
+      // Setup reader close handler
+      reader.onClose(() => {
+        console.log(`[LSP Client] ${language} connection closed`);
+        languageClients.delete(language);
+        activeConnections.delete(language);
+      });
+
+      // Start the client and wait for initialization
+      client.start().then(() => {
+        console.log(`[LSP Client] ${language} initialization completed successfully`);
+        console.log(`[LSP Client] ${language} LSP features (Go to Definition, Find References, etc.) should now be available`);
+
+        // Diagnostic: Check if providers are registered
+        import('../utils/lspDiagnostics').then(({ diagnoseLSPProviders }) => {
+          setTimeout(() => {
+            diagnoseLSPProviders();
+          }, 1000); // Wait 1 second for providers to register
+        });
+      }).catch((error) => {
+        console.error(`[LSP Client] ${language} initialization failed:`, error);
+      });
+
       languageClients.set(language, client);
       activeConnections.set(language, webSocket);
-      console.log(`[LSP Client] ${language} language client started`);
+      console.log(`[LSP Client] ${language} language client started, waiting for initialization...`);
     } catch (error) {
       console.warn(`[LSP Client] Failed to initialize ${language} language client:`, error);
       console.warn(`[LSP Client] ${language} editor will work without LSP features`);
+      // LSP is optional, continue without it
     }
-
-    reader.onClose(() => {
-      console.log(`[LSP Client] ${language} connection closed`);
-      languageClients.delete(language);
-      activeConnections.delete(language);
-    });
   };
 
   webSocket.onerror = (error) => {
-    console.error(`[LSP Client] ${language} WebSocket error:`, error);
+    console.warn(`[LSP Client] ${language} WebSocket error:`, error);
   };
 
   webSocket.onclose = () => {
@@ -165,14 +188,61 @@ async function startLanguageClientForLanguage(
 }
 
 /**
- * Create and start Language Clients for all detected languages
+ * Map GitHub language names to LanguageId
  */
-export async function startLanguageClient(workspaceRoot: string): Promise<void> {
+function mapGitHubLanguageToLanguageId(githubLang: string): LanguageId | null {
+  const mapping: Record<string, LanguageId> = {
+    'TypeScript': 'typescript',
+    'JavaScript': 'javascript',
+    'Python': 'python',
+    'Java': 'java',
+    'C#': 'csharp',
+    'C++': 'cpp',
+    'C': 'c',
+    'PHP': 'php',
+    'Swift': 'swift',
+    'Kotlin': 'kotlin',
+    'Go': 'go',
+    'Rust': 'rust',
+    'Ruby': 'ruby',
+    'Dart': 'dart',
+    'Scala': 'scala',
+    'Lua': 'lua',
+    'Perl': 'perl',
+    'CSS': 'css',
+    'HTML': 'html',
+    'JSON': 'json',
+  };
+  return mapping[githubLang] || null;
+}
+
+/**
+ * Create and start Language Clients for detected languages in the repository
+ * @param workspaceRoot - The workspace root directory
+ * @param repoLanguages - Optional map of repository languages from GitHub API (language name -> bytes)
+ */
+export async function startLanguageClient(
+  workspaceRoot: string,
+  repoLanguages?: Record<string, number>
+): Promise<void> {
   console.log('[LSP Client] Starting language clients for workspace:', workspaceRoot);
+
+  // Map GitHub languages to LanguageIds if provided
+  const targetLanguages: Set<LanguageId> | null = repoLanguages
+    ? new Set(
+        Object.keys(repoLanguages)
+          .map(mapGitHubLanguageToLanguageId)
+          .filter((lang): lang is LanguageId => lang !== null)
+      )
+    : null;
+
+  if (targetLanguages && targetLanguages.size > 0) {
+    console.log('[LSP Client] Target languages from repository:', Array.from(targetLanguages).join(', '));
+  }
 
   // Check which language servers are installed
   try {
-    const response = await fetch('http://localhost:8765/api/lsp/check-all');
+    const response = await fetch('/api/lsp/check-all');
     const data = await response.json();
 
     console.log('[LSP Client] Language server status:', data);
@@ -181,6 +251,11 @@ export async function startLanguageClient(workspaceRoot: string): Promise<void> 
     const promises: Promise<void>[] = [];
 
     for (const [lang, info] of Object.entries(data.servers as Record<LanguageId, { installed: boolean }>)) {
+      // Skip if we have target languages and this language is not in the list
+      if (targetLanguages && !targetLanguages.has(lang as LanguageId)) {
+        continue;
+      }
+
       if (info.installed) {
         promises.push(
           startLanguageClientForLanguage(workspaceRoot, lang as LanguageId)
@@ -195,7 +270,7 @@ export async function startLanguageClient(workspaceRoot: string): Promise<void> 
 
     await Promise.all(promises);
   } catch (error) {
-    console.error('[LSP Client] Failed to check language server status:', error);
+    console.warn('[LSP Client] Failed to check language server status:', error);
     // Fallback: try to start TypeScript only
     await startLanguageClientForLanguage(workspaceRoot, 'typescript').catch(error => {
       console.warn('[LSP Client] Failed to start TypeScript client:', error);

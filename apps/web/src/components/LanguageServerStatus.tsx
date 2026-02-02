@@ -22,7 +22,7 @@ export function LanguageServerStatus() {
   const checkLanguageServers = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('http://localhost:8765/api/lsp/check-all');
+      const response = await fetch('/api/lsp/check-all');
       const data = await response.json();
       setStatus(data);
 

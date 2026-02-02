@@ -7,7 +7,7 @@ import { LanguageSelector } from '../components/LanguageSelector';
 
 export function PRListPage() {
   const navigate = useNavigate();
-  const [filter, setFilter] = useState<'review-requested' | 'involved'>('review-requested');
+  const [filter, setFilter] = useState<'review-requested' | 'my-repos' | 'authored'>('review-requested');
   const [selectedRepo, setSelectedRepo] = useState<string>('all');
   const [isRepoFilterOpen, setIsRepoFilterOpen] = useState(false);
 
@@ -26,17 +26,31 @@ export function PRListPage() {
   });
 
   const {
-    data: involvedData,
-    isLoading: loadingInvolved,
-    refetch: refetchInvolved,
+    data: myReposData,
+    isLoading: loadingMyRepos,
+    refetch: refetchMyRepos,
   } = useQuery({
-    queryKey: ['prs', 'involved'],
+    queryKey: ['repositories', 'prs'],
     queryFn: async () => {
-      const response = await fetch('/api/prs/involved');
-      if (!response.ok) throw new Error('Failed to fetch PRs');
+      const response = await fetch('/api/repositories/prs');
+      if (!response.ok) throw new Error('Failed to fetch repository PRs');
       return response.json();
     },
-    enabled: filter === 'involved',
+    enabled: filter === 'my-repos',
+  });
+
+  const {
+    data: authoredData,
+    isLoading: loadingAuthored,
+    refetch: refetchAuthored,
+  } = useQuery({
+    queryKey: ['prs', 'authored'],
+    queryFn: async () => {
+      const response = await fetch('/api/prs/authored');
+      if (!response.ok) throw new Error('Failed to fetch authored PRs');
+      return response.json();
+    },
+    enabled: filter === 'authored',
   });
 
   const { data: authStatus } = useQuery({
@@ -48,25 +62,25 @@ export function PRListPage() {
     },
   });
 
-  const handleLogout = async () => {
-    try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      navigate('/login');
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
-  };
-
   const handleRefresh = () => {
     if (filter === 'review-requested') {
       refetchReviewRequested();
+    } else if (filter === 'my-repos') {
+      refetchMyRepos();
     } else {
-      refetchInvolved();
+      refetchAuthored();
     }
   };
 
-  const currentData = filter === 'review-requested' ? reviewRequestedData : involvedData;
-  const isLoading = filter === 'review-requested' ? loadingReviewRequested : loadingInvolved;
+  const currentData =
+    filter === 'review-requested' ? reviewRequestedData :
+    filter === 'my-repos' ? myReposData :
+    authoredData;
+
+  const isLoading =
+    filter === 'review-requested' ? loadingReviewRequested :
+    filter === 'my-repos' ? loadingMyRepos :
+    loadingAuthored;
 
   // Get unique repositories and their counts
   const repositories = currentData?.pullRequests
@@ -114,12 +128,6 @@ export function PRListPage() {
                   <p className="text-sm font-medium text-light-text-primary dark:text-dark-text-primary">
                     {authStatus.user.username}
                   </p>
-                  <button
-                    onClick={handleLogout}
-                    className="text-xs text-light-text-muted dark:text-dark-text-muted hover:text-light-accent-error dark:hover:text-dark-accent-error"
-                  >
-                    Logout
-                  </button>
                 </div>
               </div>
             )}
@@ -135,7 +143,10 @@ export function PRListPage() {
         <div className="flex items-center justify-between mb-6">
           <div className="flex gap-2">
             <button
-              onClick={() => setFilter('review-requested')}
+              onClick={() => {
+                setFilter('review-requested');
+                setSelectedRepo('all');
+              }}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                 filter === 'review-requested'
                   ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
@@ -150,17 +161,38 @@ export function PRListPage() {
               )}
             </button>
             <button
-              onClick={() => setFilter('involved')}
+              onClick={() => {
+                setFilter('my-repos');
+                setSelectedRepo('all');
+              }}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                filter === 'involved'
+                filter === 'my-repos'
                   ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
                   : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
               }`}
             >
-              Involved
-              {involvedData && (
+              My Repositories
+              {myReposData && (
                 <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
-                  {involvedData.count}
+                  {myReposData.count}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => {
+                setFilter('authored');
+                setSelectedRepo('all');
+              }}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                filter === 'authored'
+                  ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
+                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+              }`}
+            >
+              My PRs
+              {authoredData && (
+                <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
+                  {authoredData.count}
                 </span>
               )}
             </button>
@@ -354,8 +386,18 @@ export function PRListPage() {
             <p className="text-light-text-secondary dark:text-dark-text-secondary">
               {filter === 'review-requested'
                 ? 'You have no pending review requests.'
-                : 'You are not involved in any open pull requests.'}
+                : filter === 'my-repos'
+                  ? 'No open pull requests in your configured repositories. Add repositories in Settings.'
+                  : 'You have not created any open pull requests.'}
             </p>
+            {filter === 'my-repos' && (
+              <button
+                onClick={() => navigate('/settings')}
+                className="mt-4 px-4 py-2 bg-light-accent-primary dark:bg-dark-accent-primary text-white rounded-lg font-medium hover:shadow-lg transition-all"
+              >
+                Go to Settings
+              </button>
+            )}
           </div>
         )}
       </main>

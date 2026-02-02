@@ -1,6 +1,10 @@
 import { useState } from 'react';
 
 export interface AIReviewOptions {
+  // Context-aware review (Tree-sitter-based)
+  includeContext: boolean;
+  contextScope: 'callers' | 'implementations' | 'both';
+
   // Change intent analysis
   analyzeChangeIntent: boolean;
   changeIntentLevel: 'file' | 'block' | 'both';
@@ -32,6 +36,8 @@ interface AIReviewOptionsModalProps {
 }
 
 const defaultOptions: AIReviewOptions = {
+  includeContext: false,
+  contextScope: 'both',
   analyzeChangeIntent: true,
   changeIntentLevel: 'both',
   generateCallStack: true,
@@ -72,7 +78,7 @@ export function AIReviewOptionsModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="bg-light-surface dark:bg-dark-surface rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="px-6 py-4 border-b border-light-border dark:border-dark-border bg-gradient-to-r from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary">
@@ -84,6 +90,69 @@ export function AIReviewOptionsModal({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Context-Aware Review */}
+          <section className="space-y-3">
+            <h3 className="text-lg font-semibold text-light-text-primary dark:text-dark-text-primary flex items-center gap-2">
+              <span className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-500">
+                🧠
+              </span>
+              Context-Aware Review (Tree-sitter-based)
+            </h3>
+            <div className="ml-10 space-y-2">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={options.includeContext}
+                  onChange={(e) => updateOption('includeContext', e.target.checked)}
+                  className="w-4 h-4 rounded"
+                />
+                <span className="text-light-text-secondary dark:text-dark-text-secondary">
+                  Include context files for broader impact analysis
+                </span>
+              </label>
+              <p className="text-xs text-light-text-muted dark:text-dark-text-muted ml-6">
+                Uses Tree-sitter static analysis to find callers and implementations of modified code. Context files are analyzed for impact only, not reviewed for code quality.
+              </p>
+              {options.includeContext && (
+                <div className="ml-6 space-y-1">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={options.contextScope === 'callers'}
+                      onChange={() => updateOption('contextScope', 'callers')}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-light-text-muted dark:text-dark-text-muted text-sm">
+                      Callers only (files that call modified methods)
+                    </span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={options.contextScope === 'implementations'}
+                      onChange={() => updateOption('contextScope', 'implementations')}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-light-text-muted dark:text-dark-text-muted text-sm">
+                      Implementations only (implementations of modified interfaces/abstracts)
+                    </span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={options.contextScope === 'both'}
+                      onChange={() => updateOption('contextScope', 'both')}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-light-text-muted dark:text-dark-text-muted text-sm">
+                      Both callers and implementations
+                    </span>
+                  </label>
+                </div>
+              )}
+            </div>
+          </section>
+
           {/* Change Intent Analysis */}
           <section className="space-y-3">
             <h3 className="text-lg font-semibold text-light-text-primary dark:text-dark-text-primary flex items-center gap-2">

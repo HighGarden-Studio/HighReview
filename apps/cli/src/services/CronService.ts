@@ -1,21 +1,25 @@
 import cron from 'node-cron';
+import type { ScheduledTask } from 'node-cron';
 import { DatabaseService, Repository } from './DatabaseService.js';
 import { GitHubCLIService } from './GitHubCLIService.js';
+import { AIReviewService } from './AIReviewService.js';
 
 interface CronJob {
   repoId: string;
-  task: cron.ScheduledTask;
+  task: ScheduledTask;
 }
 
 export class CronService {
   private static instance: CronService;
   private db: DatabaseService;
   private githubService: GitHubCLIService;
+  private aiReviewService: AIReviewService;
   private jobs: Map<string, CronJob> = new Map();
 
   private constructor() {
     this.db = DatabaseService.getInstance();
     this.githubService = new GitHubCLIService();
+    this.aiReviewService = new AIReviewService();
   }
 
   public static getInstance(): CronService {
@@ -95,9 +99,9 @@ export class CronService {
         const prNumber = pr.number;
         const headSha = pr.headRefOid;
 
-        // Check if we already have a cached review for this commit
-        const defaultOptions = this.getDefaultAIReviewOptions();
-        const optionsHash = JSON.stringify(defaultOptions);
+        // Get AI review options (use saved options or defaults)
+        const aiOptions = this.getAIReviewOptions(repo);
+        const optionsHash = JSON.stringify(aiOptions);
 
         const hasCache = this.db.hasAIReviewCache(
           repo.owner,
@@ -114,38 +118,147 @@ export class CronService {
 
         console.log(`[CronService] Reviewing PR #${prNumber} (commit: ${headSha.substring(0, 7)})...`);
 
-        // Create worktree for PR
-        const worktreePath = await this.githubService.createWorktreeForPR(
-          repo.owner,
-          repo.name,
-          prNumber
-        );
+        let worktreePath: string | null = null;
+        const reviewStartTime = Date.now();
 
-        // Run AI review
-        // TODO: Integrate with AI review service
-        // For now, just log
-        console.log(`[CronService] Would run AI review for PR #${prNumber} at ${worktreePath}`);
+        try {
+          // Create worktree for PR
+          worktreePath = await this.githubService.createWorktreeForPR(
+            repo.owner,
+            repo.name,
+            prNumber
+          );
 
-        // Cache the result (for now, just mark as reviewed)
-        const mockReview = {
-          summary: 'Auto-review completed',
-          criticalIssues: [],
-          warnings: [],
-          suggestions: [],
-          filesReviewed: pr.changedFiles || 0,
-          totalIssues: 0,
-        };
+          console.log(`[CronService] Created worktree at ${worktreePath}`);
 
-        this.db.setAIReviewCache(
-          repo.owner,
-          repo.name,
-          prNumber,
-          headSha,
-          optionsHash,
-          mockReview
-        );
+          // Get base branch (default to main if not specified)
+          const baseBranch = pr.baseRefName || 'main';
 
-        console.log(`[CronService] Completed review for PR #${prNumber}`);
+          // Run AI review with configured options
+          const reviewResult = await this.aiReviewService.reviewPR(
+            worktreePath,
+            baseBranch,
+            'en', // Default to English for automated reviews
+            {
+              includeContext: aiOptions.includeContext,
+              contextScope: aiOptions.contextScope,
+              analyzeChangeIntent: aiOptions.analyzeChangeIntent,
+              changeIntentLevel: aiOptions.changeIntentLevel,
+              generateCallStack: aiOptions.generateCallStack,
+              callStackFormat: aiOptions.callStackFormat,
+              analyzeBroaderImpact: aiOptions.analyzeBroaderImpact,
+              impactScope: aiOptions.impactScope,
+              useSemanticDiff: aiOptions.useSemanticDiff,
+              detectMovedCode: aiOptions.detectMovedCode,
+              detectRefactoring: aiOptions.detectRefactoring,
+              ignoreWhitespace: aiOptions.ignoreWhitespace,
+              ignoreComments: aiOptions.ignoreComments,
+              customPrompt: aiOptions.customPrompt,
+            }
+          );
+
+          console.log(`[CronService] AI review completed for PR #${prNumber}:`, {
+            filesReviewed: reviewResult.filesReviewed,
+            totalIssues: reviewResult.totalIssues,
+            criticalIssues: reviewResult.criticalIssues.length,
+            warnings: reviewResult.warnings.length,
+            suggestions: reviewResult.suggestions.length,
+          });
+
+          // Cache the result
+          this.db.setAIReviewCache(
+            repo.owner,
+            repo.name,
+            prNumber,
+            headSha,
+            optionsHash,
+            reviewResult
+          );
+
+          // Get all reviewed files from the review result
+          const reviewedFiles = this.extractReviewedFiles(reviewResult);
+
+          // Save history record for successful review
+          this.db.saveAutoReviewHistory({
+            repositoryId: repo.id,
+            owner: repo.owner,
+            repo: repo.name,
+            prNumber: prNumber,
+            prTitle: pr.title,
+            status: 'success',
+            options: JSON.stringify(aiOptions),
+            filesReviewed: JSON.stringify(reviewedFiles),
+            summary: reviewResult.summary || 'No summary available',
+            issueCount: reviewResult.totalIssues || 0,
+            criticalCount: reviewResult.criticalIssues.length,
+            warningCount: reviewResult.warnings.length,
+            suggestionCount: reviewResult.suggestions.length,
+            executedAt: reviewStartTime,
+          });
+
+          console.log(`[CronService] Completed and cached review for PR #${prNumber}, history saved`);
+        } catch (reviewError: any) {
+          console.error(`[CronService] Failed to review PR #${prNumber}:`, reviewError);
+
+          // Cache a failure result to prevent infinite retries
+          const failureResult = {
+            summary: `Auto-review failed: ${reviewError.message}`,
+            criticalIssues: [],
+            warnings: [{
+              file: 'unknown',
+              line: 1,
+              severity: 'warning' as const,
+              category: 'Auto Review',
+              message: `Automated review failed: ${reviewError.message}. Manual review recommended.`,
+            }],
+            suggestions: [],
+            filesReviewed: 0,
+            totalIssues: 1,
+            error: reviewError.message,
+          };
+
+          this.db.setAIReviewCache(
+            repo.owner,
+            repo.name,
+            prNumber,
+            headSha,
+            optionsHash,
+            failureResult
+          );
+
+          // Save history record for failed review
+          this.db.saveAutoReviewHistory({
+            repositoryId: repo.id,
+            owner: repo.owner,
+            repo: repo.name,
+            prNumber: prNumber,
+            prTitle: pr.title,
+            status: 'failed',
+            options: JSON.stringify(aiOptions),
+            filesReviewed: JSON.stringify([]),
+            summary: `Auto-review failed: ${reviewError.message}`,
+            issueCount: 1,
+            criticalCount: 0,
+            warningCount: 1,
+            suggestionCount: 0,
+            executedAt: reviewStartTime,
+            error: reviewError.message,
+          });
+
+          console.log(`[CronService] Cached failure result for PR #${prNumber} to prevent retries, history saved`);
+        } finally {
+          // Clean up worktree after review (success or failure)
+          if (worktreePath) {
+            try {
+              console.log(`[CronService] Cleaning up worktree for PR #${prNumber}...`);
+              await this.githubService.removeWorktree(worktreePath);
+              console.log(`[CronService] Worktree cleaned up successfully`);
+            } catch (cleanupError: any) {
+              console.error(`[CronService] Failed to cleanup worktree for PR #${prNumber}:`, cleanupError);
+              // Don't throw - cleanup failure shouldn't fail the entire job
+            }
+          }
+        }
       }
 
       console.log(`[CronService] Auto review completed for ${repo.fullName}`);
@@ -155,15 +268,61 @@ export class CronService {
   }
 
   /**
-   * Get default AI review options
+   * Extract reviewed files from review result
    */
-  private getDefaultAIReviewOptions(): any {
+  private extractReviewedFiles(reviewResult: any): string[] {
+    const files = new Set<string>();
+
+    // Extract files from issues
+    if (reviewResult.criticalIssues) {
+      reviewResult.criticalIssues.forEach((issue: any) => {
+        if (issue.file) files.add(issue.file);
+      });
+    }
+    if (reviewResult.warnings) {
+      reviewResult.warnings.forEach((issue: any) => {
+        if (issue.file) files.add(issue.file);
+      });
+    }
+    if (reviewResult.suggestions) {
+      reviewResult.suggestions.forEach((issue: any) => {
+        if (issue.file) files.add(issue.file);
+      });
+    }
+
+    return Array.from(files);
+  }
+
+  /**
+   * Get AI review options for a repository (use saved options or defaults)
+   */
+  private getAIReviewOptions(repo: Repository): any {
+    if (repo.aiReviewOptions) {
+      try {
+        // Parse saved options
+        const savedOptions = JSON.parse(repo.aiReviewOptions);
+        return savedOptions;
+      } catch (error) {
+        console.error(`[CronService] Failed to parse AI options for ${repo.fullName}, using defaults:`, error);
+      }
+    }
+
+    // Return default options if no saved options or parsing failed
     return {
-      includeCallStacks: true,
-      includeImpactAnalysis: true,
-      includeChangeIntents: true,
-      includeSemanticChanges: true,
-      severityThreshold: 'suggestion',
+      includeContext: true,
+      contextScope: 'both',
+      analyzeChangeIntent: true,
+      changeIntentLevel: 'both',
+      generateCallStack: true,
+      callStackFormat: 'both',
+      analyzeBroaderImpact: true,
+      impactScope: 'project',
+      useSemanticDiff: true,
+      detectMovedCode: true,
+      detectRefactoring: true,
+      ignoreWhitespace: true,
+      ignoreComments: false,
+      customPrompt: '',
     };
   }
 

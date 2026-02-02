@@ -37,7 +37,7 @@ export class ProjectIndexService {
    */
   private initializeDatabase(): void {
     // Create indexes table
-    this.dbService.db.exec(`
+    this.dbService.getDatabase().exec(`
       CREATE TABLE IF NOT EXISTS project_indexes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_path TEXT NOT NULL,
@@ -51,7 +51,7 @@ export class ProjectIndexService {
     `);
 
     // Create symbols table
-    this.dbService.db.exec(`
+    this.dbService.getDatabase().exec(`
       CREATE TABLE IF NOT EXISTS indexed_symbols (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_path TEXT NOT NULL,
@@ -68,7 +68,7 @@ export class ProjectIndexService {
     `);
 
     // Create indexes for fast lookups
-    this.dbService.db.exec(`
+    this.dbService.getDatabase().exec(`
       CREATE INDEX IF NOT EXISTS idx_symbols_name ON indexed_symbols(name);
       CREATE INDEX IF NOT EXISTS idx_symbols_file ON indexed_symbols(file_path);
       CREATE INDEX IF NOT EXISTS idx_symbols_project_branch ON indexed_symbols(project_path, branch);
@@ -84,7 +84,7 @@ export class ProjectIndexService {
       const { stdout: commitHash } = await execa('git', ['rev-parse', 'HEAD'], { cwd: projectPath });
 
       // Check if we have an index for this project/branch/commit
-      const existing = this.dbService.db.prepare(`
+      const existing = this.dbService.getDatabase().prepare(`
         SELECT commit_hash FROM project_indexes
         WHERE project_path = ? AND branch = ?
       `).get(projectPath, branch) as { commit_hash: string } | undefined;
@@ -129,7 +129,7 @@ export class ProjectIndexService {
       const { stdout: commitHash } = await execa('git', ['rev-parse', 'HEAD'], { cwd: projectPath });
 
       // Clear old symbols
-      this.dbService.db.prepare(`
+      this.dbService.getDatabase().prepare(`
         DELETE FROM indexed_symbols WHERE project_path = ? AND branch = ?
       `).run(projectPath, branch);
 
@@ -151,7 +151,7 @@ export class ProjectIndexService {
       console.log(`[Index] Found ${symbols.length} symbols`);
 
       // Insert symbols into database
-      const insertSymbol = this.dbService.db.prepare(`
+      const insertSymbol = this.dbService.getDatabase().prepare(`
         INSERT INTO indexed_symbols
         (project_path, branch, name, kind, file_path, line, column, container_name, language, indexed_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -174,7 +174,7 @@ export class ProjectIndexService {
       }
 
       // Update index status
-      this.dbService.db.prepare(`
+      this.dbService.getDatabase().prepare(`
         INSERT OR REPLACE INTO project_indexes
         (project_path, branch, commit_hash, indexed_at, symbol_count, file_count)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -448,7 +448,7 @@ export class ProjectIndexService {
    * Find symbols by name
    */
   findSymbols(projectPath: string, branch: string, name: string): IndexedSymbol[] {
-    const results = this.dbService.db.prepare(`
+    const results = this.dbService.getDatabase().prepare(`
       SELECT name, kind, file_path, line, column, container_name, language
       FROM indexed_symbols
       WHERE project_path = ? AND branch = ? AND name LIKE ?
@@ -470,7 +470,7 @@ export class ProjectIndexService {
    * Find symbols in a file
    */
   findSymbolsInFile(projectPath: string, branch: string, filePath: string): IndexedSymbol[] {
-    const results = this.dbService.db.prepare(`
+    const results = this.dbService.getDatabase().prepare(`
       SELECT name, kind, file_path, line, column, container_name, language
       FROM indexed_symbols
       WHERE project_path = ? AND branch = ? AND file_path = ?
@@ -491,7 +491,7 @@ export class ProjectIndexService {
    * Get index status
    */
   getIndexStatus(projectPath: string, branch: string): IndexStatus | null {
-    const result = this.dbService.db.prepare(`
+    const result = this.dbService.getDatabase().prepare(`
       SELECT * FROM project_indexes
       WHERE project_path = ? AND branch = ?
     `).get(projectPath, branch) as any;

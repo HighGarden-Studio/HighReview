@@ -7,34 +7,39 @@ interface ProgressStep {
   description?: string;
 }
 
-export type AIReviewStep = 'preparing' | 'analyzing' | 'thinking' | 'generating' | 'finalizing' | 'completed';
+export type AIReviewStep = 'cloning' | 'checkout' | 'indexing' | 'lsp-ready' | 'loading' | 'preparing' | 'collecting' | 'analyzing' | 'thinking' | 'generating' | 'finalizing' | 'completed';
 
 interface AIProgressIndicatorProps {
   isActive: boolean;
   currentStep?: AIReviewStep;
   onComplete?: () => void;
+  indexingProgress?: { current: number; total: number }; // For showing file count during indexing
 }
 
 /**
  * Displays AI processing progress with animated steps
  * Shows actual progress based on currentStep prop instead of simulating
  */
-export function AIProgressIndicator({ isActive, currentStep = 'preparing', onComplete }: AIProgressIndicatorProps) {
+export function AIProgressIndicator({ isActive, currentStep = 'indexing', onComplete, indexingProgress }: AIProgressIndicatorProps) {
   const [steps, setSteps] = useState<ProgressStep[]>([
-    { id: 'prepare', label: 'Preparing review', status: 'pending', description: 'Loading files...' },
-    { id: 'analyze', label: 'Analyzing changes', status: 'pending', description: 'Parsing diffs...' },
-    { id: 'thinking', label: 'AI is thinking', status: 'pending', description: 'This may take 2-5 minutes...' },
-    { id: 'generate', label: 'Generating review', status: 'pending', description: 'Creating feedback...' },
-    { id: 'parse', label: 'Finalizing', status: 'pending', description: 'Parsing results...' },
+    { id: 'indexing', label: 'Indexing project files', status: 'pending', description: 'Loading all files into editor...' },
+    { id: 'lsp-ready', label: 'Waiting for LSP server', status: 'pending', description: 'Waiting for code intelligence server to analyze project (15-30 seconds)...' },
+    { id: 'prepare', label: 'Starting AI review', status: 'pending', description: 'Initializing AI analysis...' },
+    { id: 'analyze', label: 'Analyzing code changes', status: 'pending', description: 'Parsing file diffs...' },
+    { id: 'thinking', label: 'AI deep analysis', status: 'pending', description: 'This may take 2-5 minutes...' },
+    { id: 'generate', label: 'Generating review', status: 'pending', description: 'Creating detailed feedback...' },
+    { id: 'parse', label: 'Finalizing results', status: 'pending', description: 'Processing AI response...' },
   ]);
 
   const stepMapping: Record<AIReviewStep, number> = {
-    preparing: 0,
-    analyzing: 1,
-    thinking: 2,
-    generating: 3,
-    finalizing: 4,
-    completed: 5,
+    indexing: 0,
+    'lsp-ready': 1,
+    preparing: 2,
+    analyzing: 3,
+    thinking: 4,
+    generating: 5,
+    finalizing: 6,
+    completed: 7,
   };
 
   // Update steps based on currentStep prop
@@ -42,11 +47,13 @@ export function AIProgressIndicator({ isActive, currentStep = 'preparing', onCom
     if (!isActive) {
       // Reset on inactive
       setSteps([
-        { id: 'prepare', label: 'Preparing review', status: 'pending', description: 'Loading files...' },
-        { id: 'analyze', label: 'Analyzing changes', status: 'pending', description: 'Parsing diffs...' },
-        { id: 'thinking', label: 'AI is thinking', status: 'pending', description: 'This may take 2-5 minutes...' },
-        { id: 'generate', label: 'Generating review', status: 'pending', description: 'Creating feedback...' },
-        { id: 'parse', label: 'Finalizing', status: 'pending', description: 'Parsing results...' },
+        { id: 'indexing', label: 'Indexing project files', status: 'pending', description: 'Loading all files into editor...' },
+        { id: 'lsp-ready', label: 'Preparing code intelligence', status: 'pending', description: 'LSP server analyzing code...' },
+        { id: 'prepare', label: 'Starting AI review', status: 'pending', description: 'Initializing AI analysis...' },
+        { id: 'analyze', label: 'Analyzing code changes', status: 'pending', description: 'Parsing file diffs...' },
+        { id: 'thinking', label: 'AI deep analysis', status: 'pending', description: 'This may take 2-5 minutes...' },
+        { id: 'generate', label: 'Generating review', status: 'pending', description: 'Creating detailed feedback...' },
+        { id: 'parse', label: 'Finalizing results', status: 'pending', description: 'Processing AI response...' },
       ]);
       return;
     }
@@ -55,6 +62,14 @@ export function AIProgressIndicator({ isActive, currentStep = 'preparing', onCom
 
     setSteps(prevSteps =>
       prevSteps.map((s, i) => {
+        // Update indexing step description with progress
+        if (s.id === 'indexing' && indexingProgress) {
+          const description = `Loading files: ${indexingProgress.current} / ${indexingProgress.total}`;
+          if (i < currentStepIndex) return { ...s, status: 'completed' as const, description };
+          if (i === currentStepIndex) return { ...s, status: 'active' as const, description };
+          return { ...s, status: 'pending' as const, description };
+        }
+
         if (i < currentStepIndex) return { ...s, status: 'completed' as const };
         if (i === currentStepIndex) return { ...s, status: 'active' as const };
         return { ...s, status: 'pending' as const };
@@ -68,7 +83,7 @@ export function AIProgressIndicator({ isActive, currentStep = 'preparing', onCom
       );
       onComplete?.();
     }
-  }, [isActive, currentStep, onComplete]);
+  }, [isActive, currentStep, indexingProgress, onComplete]);
 
   if (!isActive) {
     return null;

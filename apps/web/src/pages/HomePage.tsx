@@ -30,15 +30,6 @@ export function HomePage() {
     },
   });
 
-  const handleLogout = async () => {
-    try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      navigate('/login');
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
-  };
-
   return (
     <div className="min-h-screen transition-colors duration-200 bg-light-bg dark:bg-dark-bg">
       {/* Header */}
@@ -64,12 +55,6 @@ export function HomePage() {
                   <p className="text-sm font-medium text-light-text-primary dark:text-dark-text-primary">
                     {authStatus.user.username}
                   </p>
-                  <button
-                    onClick={handleLogout}
-                    className="text-xs text-light-text-muted dark:text-dark-text-muted hover:text-light-accent-error dark:hover:text-dark-accent-error"
-                  >
-                    Logout
-                  </button>
                 </div>
                 {authStatus.user.avatarUrl && (
                   <img
@@ -241,7 +226,7 @@ export function HomePage() {
             <h2 className="text-lg font-semibold text-light-text-primary dark:text-dark-text-primary mb-4">
               Quick Actions
             </h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <button
                 onClick={() => navigate('/prs')}
                 className="group relative overflow-hidden px-6 py-4 bg-gradient-to-br from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary text-white rounded-lg font-medium hover:shadow-lg transition-all"
@@ -285,36 +270,6 @@ export function HomePage() {
                     <div className="font-semibold">Settings</div>
                     <div className="text-xs text-light-text-muted dark:text-dark-text-muted">
                       Configure AI & repositories
-                    </div>
-                  </div>
-                </div>
-              </button>
-
-              <button
-                onClick={() =>
-                  navigate('/review', {
-                    state: {
-                      worktreePath: '/Users/highgarden/.highreview/worktrees/example',
-                      baseBranch: 'main',
-                      repoRoot: '/Users/highgarden/Developments/AI/HighReview',
-                    },
-                  })
-                }
-                className="px-6 py-4 bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary rounded-lg font-medium hover:bg-light-border dark:hover:bg-dark-border transition-colors border border-light-border dark:border-dark-border"
-              >
-                <div className="flex items-center gap-3">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
-                    />
-                  </svg>
-                  <div className="text-left">
-                    <div className="font-semibold">Code Review (Demo)</div>
-                    <div className="text-xs text-light-text-muted dark:text-dark-text-muted">
-                      Test review interface
                     </div>
                   </div>
                 </div>

@@ -26,6 +26,7 @@ export interface GitHubPR {
 }
 
 export interface PRFile {
+  path: string;
   filename: string;
   status: 'added' | 'modified' | 'removed' | 'renamed';
   additions: number;
@@ -215,6 +216,125 @@ export class GitHubCLIService {
   }
 
   /**
+   * Get PRs authored by current user
+   */
+  async getAuthoredPRs(): Promise<GitHubPR[]> {
+    try {
+      const { stdout } = await execa('gh', [
+        'search',
+        'prs',
+        '--author=@me',
+        '--state=open',
+        '--json=number,title,body,state,author,url,repository,createdAt,updatedAt',
+        '--limit=100',
+      ]);
+
+      const prs = JSON.parse(stdout);
+
+      // Use GraphQL to fetch detailed info including comment counts
+      const detailedPRs = await Promise.all(
+        prs.map(async (pr: any) => {
+          try {
+            const [owner, repo] = pr.repository.nameWithOwner.split('/');
+
+            // Use GraphQL to get PR details with comment counts and file count
+            const query = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    number
+                    title
+                    body
+                    state
+                    author {
+                      login
+                    }
+                    url
+                    headRefName
+                    baseRefName
+                    headRefOid
+                    createdAt
+                    updatedAt
+                    comments {
+                      totalCount
+                    }
+                    reviews {
+                      totalCount
+                    }
+                    files {
+                      totalCount
+                    }
+                  }
+                }
+              }
+            `;
+
+            const { stdout: graphqlResult } = await execa('gh', [
+              'api',
+              'graphql',
+              '-f',
+              `query=${query}`,
+              '-F',
+              `owner=${owner}`,
+              '-F',
+              `repo=${repo}`,
+              '-F',
+              `number=${pr.number}`,
+            ]);
+
+            const result = JSON.parse(graphqlResult);
+            const prData = result.data.repository.pullRequest;
+
+            return {
+              number: prData.number,
+              title: prData.title,
+              body: prData.body || '',
+              state: prData.state,
+              author: prData.author.login,
+              url: prData.url,
+              repository: pr.repository.nameWithOwner,
+              repositoryUrl: `https://github.com/${pr.repository.nameWithOwner}`,
+              headRefName: prData.headRefName,
+              baseRefName: prData.baseRefName,
+              headRefOid: prData.headRefOid,
+              createdAt: prData.createdAt,
+              updatedAt: prData.updatedAt,
+              commentCount: prData.comments.totalCount,
+              reviewCount: prData.reviews.totalCount,
+              fileCount: prData.files.totalCount,
+            };
+          } catch (error) {
+            console.error(`[GitHub] Failed to get details for PR #${pr.number}:`, error);
+            // Return basic info if detailed fetch fails
+            return {
+              number: pr.number,
+              title: pr.title,
+              body: pr.body || '',
+              state: pr.state,
+              author: pr.author.login,
+              url: pr.url,
+              repository: pr.repository.nameWithOwner,
+              repositoryUrl: `https://github.com/${pr.repository.nameWithOwner}`,
+              headRefName: '',
+              baseRefName: '',
+              headRefOid: '',
+              createdAt: pr.createdAt,
+              updatedAt: pr.updatedAt,
+              commentCount: 0,
+              reviewCount: 0,
+            };
+          }
+        })
+      );
+
+      return detailedPRs.filter((pr): pr is GitHubPR => pr !== null);
+    } catch (error: any) {
+      console.error('[GitHub] Failed to get authored PRs:', error);
+      throw new Error(`Failed to fetch authored PRs: ${error.message}`);
+    }
+  }
+
+  /**
    * Get PRs where user is involved (author, assignee, mentioned, or reviewer)
    */
   async getInvolvedPRs(): Promise<GitHubPR[]> {
@@ -343,6 +463,7 @@ export class GitHubCLIService {
         query($owner: String!, $repo: String!, $number: Int!) {
           repository(owner: $owner, name: $repo) {
             pullRequest(number: $number) {
+              id
               number
               title
               body
@@ -361,6 +482,14 @@ export class GitHubCLIService {
               }
               reviews {
                 totalCount
+              }
+              reactions(first: 100) {
+                nodes {
+                  content
+                  user {
+                    login
+                  }
+                }
               }
             }
           }
@@ -384,6 +513,7 @@ export class GitHubCLIService {
       const pr = result.data.repository.pullRequest;
 
       return {
+        id: pr.id,
         number: pr.number,
         title: pr.title,
         body: pr.body || '',
@@ -399,7 +529,8 @@ export class GitHubCLIService {
         updatedAt: pr.updatedAt,
         commentCount: pr.comments.totalCount,
         reviewCount: pr.reviews.totalCount,
-      };
+        reactions: pr.reactions,
+      } as any;
     } catch (error: any) {
       console.error('[GitHub] Failed to get PR details:', error);
       return null;
@@ -411,27 +542,174 @@ export class GitHubCLIService {
    */
   async getPRFiles(owner: string, repo: string, prNumber: number): Promise<PRFile[]> {
     try {
-      const { stdout } = await execa('gh', [
-        'api',
-        `/repos/${owner}/${repo}/pulls/${prNumber}/files`,
-        '--paginate',
-      ]);
+      console.log(`[GitHub] Fetching files for PR #${prNumber} in ${owner}/${repo}`);
 
-      const files = JSON.parse(stdout);
+      // Use GraphQL to fetch all files with pagination
+      const query = `
+        query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              files(first: 100, after: $cursor) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  path
+                  additions
+                  deletions
+                  changeType
+                }
+              }
+            }
+          }
+        }
+      `;
 
-      return files.map((file: any) => ({
-        path: file.filename,
-        filename: file.filename,
-        status: file.status,
-        additions: file.additions,
-        deletions: file.deletions,
-        changes: file.changes,
-        patch: file.patch,
-      }));
+      let allFiles: any[] = [];
+      let hasNextPage = true;
+      let cursor: string | null = null;
+      let pageCount = 0;
+
+      while (hasNextPage) {
+        pageCount++;
+        console.log(`[GitHub] Fetching page ${pageCount} of files...`);
+
+        const payload = {
+          query,
+          variables: {
+            owner,
+            repo,
+            number: prNumber,
+            cursor,
+          },
+        };
+
+        const { stdout } = await execa('gh', [
+          'api',
+          'graphql',
+          '--input',
+          '-',
+        ], {
+          input: JSON.stringify(payload),
+        });
+
+        const result = JSON.parse(stdout);
+
+        if (!result.data?.repository?.pullRequest?.files) {
+          console.warn(`[GitHub] No files found for PR #${prNumber}`);
+          break;
+        }
+
+        const filesData = result.data.repository.pullRequest.files;
+        allFiles.push(...filesData.nodes);
+
+        hasNextPage = filesData.pageInfo.hasNextPage;
+        cursor = filesData.pageInfo.endCursor;
+
+        console.log(`[GitHub] Fetched ${filesData.nodes.length} files (total: ${allFiles.length})`);
+      }
+
+      console.log(`[GitHub] Total files fetched: ${allFiles.length} in ${pageCount} pages`);
+
+      // For patch data, we still need to use REST API
+      // But we'll limit this to prevent huge payloads - we can fetch patches on-demand later
+      let filesWithPatches: PRFile[] = [];
+
+      // Fetch patches using REST API with pagination
+      // Note: REST API returns max 100 files per page with 3000 files total limit
+      const batchSize = 100;
+      const maxFilesWithPatches = Math.min(allFiles.length, 300); // Limit to 300 files with patches
+
+      for (let i = 0; i < maxFilesWithPatches; i += batchSize) {
+        const pageNumber = Math.floor(i / batchSize) + 1;
+        console.log(`[GitHub] Fetching patches page ${pageNumber} (files ${i + 1}-${Math.min(i + batchSize, maxFilesWithPatches)})`);
+
+        try {
+          const { stdout: patchStdout } = await execa('gh', [
+            'api',
+            `/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100&page=${pageNumber}`,
+          ]);
+
+          const patchFiles = JSON.parse(patchStdout);
+
+          // Match patch files with GraphQL files
+          patchFiles.forEach((patchFile: any) => {
+            const graphQLFile = allFiles.find((f: any) => f.path === patchFile.filename);
+            if (graphQLFile) {
+              filesWithPatches.push({
+                path: graphQLFile.path,
+                filename: graphQLFile.path,
+                status: this.mapChangeTypeToStatus(graphQLFile.changeType),
+                additions: graphQLFile.additions,
+                deletions: graphQLFile.deletions,
+                changes: graphQLFile.additions + graphQLFile.deletions,
+                patch: patchFile.patch || '',
+              });
+            }
+          });
+
+          // If we got fewer files than expected, we've reached the end
+          if (patchFiles.length < batchSize) {
+            break;
+          }
+        } catch (patchError) {
+          console.warn(`[GitHub] Failed to fetch patches for page ${pageNumber}:`, patchError);
+          // On error, add remaining files without patches
+          const remainingFiles = allFiles.slice(i, Math.min(i + batchSize, maxFilesWithPatches));
+          remainingFiles.forEach((file: any) => {
+            if (!filesWithPatches.find(f => f.path === file.path)) {
+              filesWithPatches.push({
+                path: file.path,
+                filename: file.path,
+                status: this.mapChangeTypeToStatus(file.changeType),
+                additions: file.additions,
+                deletions: file.deletions,
+                changes: file.additions + file.deletions,
+                patch: '',
+              });
+            }
+          });
+          break;
+        }
+      }
+
+      // For remaining files (beyond 300), add without patches
+      if (allFiles.length > 300) {
+        console.log(`[GitHub] Adding ${allFiles.length - 300} files without patches to reduce payload size`);
+        allFiles.slice(300).forEach((file: any) => {
+          filesWithPatches.push({
+            path: file.path,
+            filename: file.path,
+            status: this.mapChangeTypeToStatus(file.changeType),
+            additions: file.additions,
+            deletions: file.deletions,
+            changes: file.additions + file.deletions,
+            patch: '',
+          });
+        });
+      }
+
+      return filesWithPatches;
     } catch (error: any) {
       console.error('[GitHub] Failed to get PR files:', error);
       throw new Error(`Failed to fetch PR files: ${error.message}`);
     }
+  }
+
+  /**
+   * Map GraphQL changeType to REST API status
+   */
+  private mapChangeTypeToStatus(changeType: string): 'added' | 'modified' | 'removed' | 'renamed' {
+    const mapping: { [key: string]: 'added' | 'modified' | 'removed' | 'renamed' } = {
+      'ADDED': 'added',
+      'MODIFIED': 'modified',
+      'DELETED': 'removed',
+      'RENAMED': 'renamed',
+      'COPIED': 'added',
+      'CHANGED': 'modified',
+    };
+    return mapping[changeType] || 'modified';
   }
 
   /**
@@ -598,12 +876,16 @@ export class GitHubCLIService {
                         path
                         position
                         line
+                        originalLine
                         diffHunk
                         author {
                           login
                           avatarUrl
                         }
                         createdAt
+                        replyTo {
+                          id
+                        }
                         reactions(first: 10) {
                           nodes {
                             content
@@ -621,18 +903,24 @@ export class GitHubCLIService {
                 nodes {
                   id
                   isResolved
+                  isOutdated
                   comments(first: 50) {
                     nodes {
                       id
                       body
                       path
                       line
+                      originalLine
+                      position
                       diffHunk
                       author {
                         login
                         avatarUrl
                       }
                       createdAt
+                      replyTo {
+                        id
+                      }
                       reactions(first: 10) {
                         nodes {
                           content
@@ -731,7 +1019,8 @@ export class GitHubCLIService {
 
       return {
         prAuthor,
-        conversation,
+        reviewThreads,
+        timelineItems,
       };
     } catch (error: any) {
       console.error('[GitHub] Failed to get PR conversation:', error);
@@ -921,6 +1210,211 @@ export class GitHubCLIService {
         throw new Error(`File not found: ${filePath} at ${ref}`);
       }
       throw new Error(`Failed to fetch file from GitHub: ${error.message}`);
+    }
+  }
+
+  /**
+   * List pull requests for a repository
+   */
+  async listPullRequests(owner: string, repo: string, state: 'open' | 'closed' | 'all' = 'open'): Promise<GitHubPR[]> {
+    try {
+      console.log(`[GitHub] Fetching ${state} PRs for ${owner}/${repo}`);
+
+      const query = `
+        query($owner: String!, $repo: String!, $states: [PullRequestState!]) {
+          repository(owner: $owner, name: $repo) {
+            pullRequests(first: 100, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
+              nodes {
+                number
+                title
+                body
+                state
+                author {
+                  login
+                }
+                url
+                headRefName
+                baseRefName
+                headRefOid
+                createdAt
+                updatedAt
+                changedFiles
+                comments {
+                  totalCount
+                }
+                reviews {
+                  totalCount
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const states = state === 'all' ? null : [state.toUpperCase()];
+
+      // Prepare GraphQL payload with variables
+      const payload = {
+        query,
+        variables: {
+          owner,
+          repo,
+          states,
+        },
+      };
+
+      const { stdout } = await execa('gh', [
+        'api',
+        'graphql',
+        '--input',
+        '-',
+      ], {
+        input: JSON.stringify(payload),
+      });
+
+      const result = JSON.parse(stdout);
+
+      if (!result.data?.repository?.pullRequests?.nodes) {
+        console.warn(`[GitHub] No PRs found for ${owner}/${repo}`);
+        return [];
+      }
+
+      const prs = result.data.repository.pullRequests.nodes;
+
+      return prs.map((pr: any) => ({
+        number: pr.number,
+        title: pr.title,
+        body: pr.body || '',
+        state: pr.state,
+        author: pr.author.login,
+        url: pr.url,
+        repository: `${owner}/${repo}`,
+        repositoryUrl: `https://github.com/${owner}/${repo}`,
+        headRefName: pr.headRefName,
+        baseRefName: pr.baseRefName,
+        headRefOid: pr.headRefOid,
+        createdAt: pr.createdAt,
+        updatedAt: pr.updatedAt,
+        fileCount: pr.changedFiles,
+        commentCount: pr.comments.totalCount,
+        reviewCount: pr.reviews.totalCount,
+      }));
+    } catch (error: any) {
+      console.error('[GitHub] Failed to list pull requests:', error);
+      throw new Error(`Failed to list pull requests: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create a worktree for a PR review
+   */
+  async createWorktreeForPR(owner: string, repo: string, prNumber: number): Promise<string> {
+    try {
+      const { homedir } = await import('os');
+      const { join } = await import('path');
+      const { mkdirSync, existsSync } = await import('fs');
+
+      // Create worktree directory in ~/.highreview/worktrees
+      const worktreeBase = join(homedir(), '.highreview', 'worktrees', `${owner}-${repo}`);
+      if (!existsSync(worktreeBase)) {
+        mkdirSync(worktreeBase, { recursive: true });
+      }
+
+      const worktreePath = join(worktreeBase, `pr-${prNumber}`);
+
+      // Remove existing worktree if it exists
+      if (existsSync(worktreePath)) {
+        console.log(`[GitHub] Removing existing worktree at ${worktreePath}`);
+        await this.removeWorktree(worktreePath);
+      }
+
+      // Get repository clone path (should already exist from previous operations)
+      const repoPath = join(homedir(), '.highreview', 'repos', `${owner}-${repo}`);
+
+      // Clone repository if it doesn't exist
+      if (!existsSync(repoPath)) {
+        console.log(`[GitHub] Cloning repository to ${repoPath}`);
+        mkdirSync(repoPath, { recursive: true });
+        await execa('gh', ['repo', 'clone', `${owner}/${repo}`, repoPath]);
+      }
+
+      // Fetch latest changes
+      console.log(`[GitHub] Fetching latest changes for ${owner}/${repo}`);
+      await execa('git', ['fetch', 'origin'], { cwd: repoPath });
+
+      // Get PR head ref
+      const prDetails = await this.getPRDetails(owner, repo, prNumber);
+      if (!prDetails) {
+        throw new Error(`Failed to get PR details for #${prNumber}`);
+      }
+
+      const headRef = prDetails.headRefName;
+      console.log(`[GitHub] Creating worktree for PR #${prNumber} (ref: ${headRef})`);
+
+      // Create worktree
+      await execa('git', ['worktree', 'add', worktreePath, `origin/${headRef}`], {
+        cwd: repoPath,
+      });
+
+      console.log(`[GitHub] Worktree created at ${worktreePath}`);
+      return worktreePath;
+    } catch (error: any) {
+      console.error('[GitHub] Failed to create worktree:', error);
+      throw new Error(`Failed to create worktree for PR #${prNumber}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Remove a worktree
+   */
+  async removeWorktree(worktreePath: string): Promise<void> {
+    try {
+      const { existsSync } = await import('fs');
+
+      if (!existsSync(worktreePath)) {
+        console.log(`[GitHub] Worktree does not exist: ${worktreePath}`);
+        return;
+      }
+
+      console.log(`[GitHub] Removing worktree at ${worktreePath}`);
+
+      // Find the main repository path
+      const { stdout: mainPath } = await execa('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+        cwd: worktreePath,
+      });
+
+      const repoPath = mainPath.trim().replace('/.git', '');
+
+      // Remove worktree
+      await execa('git', ['worktree', 'remove', worktreePath, '--force'], {
+        cwd: repoPath,
+      });
+
+      console.log(`[GitHub] Worktree removed: ${worktreePath}`);
+    } catch (error: any) {
+      console.error('[GitHub] Failed to remove worktree:', error);
+      // Don't throw, just log - worktree cleanup is best effort
+    }
+  }
+
+  /**
+   * Get programming languages used in a repository
+   * Returns a map of language names to their byte counts
+   */
+  async getRepositoryLanguages(owner: string, repo: string): Promise<Record<string, number>> {
+    try {
+      const { stdout } = await execa('gh', [
+        'api',
+        `/repos/${owner}/${repo}/languages`,
+      ]);
+
+      const languages = JSON.parse(stdout);
+      console.log(`[GitHub] Repository languages for ${owner}/${repo}:`, Object.keys(languages).join(', '));
+      return languages;
+    } catch (error: any) {
+      console.error('[GitHub] Failed to fetch repository languages:', error);
+      // Return empty object on error
+      return {};
     }
   }
 }

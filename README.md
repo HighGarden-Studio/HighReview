@@ -243,8 +243,18 @@ All configuration is optional. The app works out of the box with GitHub CLI auth
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PORT` | Server port | `8765` |
-| `HIGHREVIEW_DATA_DIR` | Data storage directory | `~/.highreview` |
+| `HIGHREVIEW_BASE_DIR` | Data storage directory | `./.highreview-prs` (local mode) |
+| `HIGHREVIEW_GLOBAL_MODE` | Use global storage mode | `false` |
 | `NODE_ENV` | Environment mode | `development` |
+
+**Storage Modes:**
+- **Local Mode (Default)**: Stores PR clones in `./.highreview-prs/` within your current working directory
+  - ✅ Best for npx usage and Claude Code integration
+  - ✅ Workspace-isolated: Each directory has its own PR cache
+  - ✅ Easy cleanup: Delete directory to remove all PR data
+- **Global Mode**: Set `HIGHREVIEW_GLOBAL_MODE=true` to use `~/.highreview/`
+  - Use for reviewing PRs from multiple workspaces
+  - Shared cache across all projects
 
 **Note:**
 - No `GITHUB_TOKEN` needed - uses GitHub CLI (`gh`) authentication
@@ -252,7 +262,21 @@ All configuration is optional. The app works out of the box with GitHub CLI auth
 
 ### Data Storage
 
-HighReview stores data in `~/.highreview/`:
+**Local Mode (Default):**
+```
+your-workspace/
+└── .highreview-prs/          # PR review workspace (add to .gitignore)
+    ├── repos/
+    │   └── owner-repo/       # Bare repository (shared)
+    └── worktrees/
+        └── owner-repo/
+            ├── pr-123/       # PR #123 worktree
+            └── pr-456/       # PR #456 worktree
+```
+
+**Global Mode:**
+```
+~/.highreview/                # Global PR review workspace
 
 ```
 ~/.highreview/
@@ -307,16 +331,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [ ] Ollama provider integration
 - [ ] Available model synchronization on provider connection test
 - [ ] Model selection UI for each provider
-
-### Future Considerations
-- [ ] VS Code extension
-- [ ] JetBrains plugin integration
-- [ ] GitLab support
-- [ ] Bitbucket support
-- [ ] Self-hosted GitHub Enterprise support
-- [ ] Batch comment resolution
-- [ ] Comment templates library
-- [ ] Review analytics dashboard
 
 ## 🐛 Known Issues
 

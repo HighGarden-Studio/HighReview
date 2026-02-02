@@ -6,6 +6,7 @@ import { AIReviewKoreanParser } from './AIReviewKoreanParser.js';
 import { AIProviderFactory, registerProviders, getDefaultProvider } from './providers/index.js';
 import type { AIProvider } from './providers/index.js';
 import { getAIConfigService } from './AIConfigService.js';
+import { ContextAnalyzer } from './ContextAnalyzer.js';
 
 interface ReviewComment {
   file: string;
@@ -48,6 +49,16 @@ interface Refactoring {
   type: string;
   description: string;
   files: string[];
+}
+
+interface ContextFile {
+  path: string;
+  reason: 'caller' | 'implementation' | 'interface' | 'abstract';
+  relatedSymbol: string;
+  location: {
+    line: number;
+    column: number;
+  };
 }
 
 interface ReviewResult {
@@ -171,18 +182,93 @@ export class AIReviewService {
       // Get full file contents for better context (limit to reasonable size)
       const fileContents = await this.getFileContents(worktreePath, changedFiles);
 
+      // Use Tree-sitter based context analysis to find call sites and usages
+      let contextFileContents: Map<string, string> = new Map();
+      let contextAnalysisInfo: string = '';
+
+      if (options?.includeContext) {
+        console.log('[AI Review] Using Tree-sitter to analyze comprehensive code context (definitions, types, implementations, references)...');
+
+        try {
+          const contextAnalyzer = new ContextAnalyzer();
+
+          // Use comprehensive context analysis that includes:
+          // - Definitions (where symbols are defined)
+          // - Type definitions (type information)
+          // - Implementations (what implements interfaces/abstract classes)
+          // - References (where symbols are used)
+          const comprehensiveContext = await contextAnalyzer.analyzeComprehensiveContext(diff, worktreePath);
+
+          console.log(`[AI Review] Found ${comprehensiveContext.symbols.length} modified symbols with comprehensive context`);
+
+          // Build rich context information from comprehensive analysis
+          if (comprehensiveContext.symbols.length > 0) {
+            contextAnalysisInfo = contextAnalyzer.buildComprehensiveAIContext(comprehensiveContext);
+            console.log('[AI Review] Generated comprehensive context information length:', contextAnalysisInfo.length);
+
+            // Log summary of what was found
+            const summary = {
+              symbols: comprehensiveContext.symbols.length,
+              withDefinitions: comprehensiveContext.symbols.filter(s => s.definition?.locations.length).length,
+              withTypeDefinitions: comprehensiveContext.symbols.filter(s => s.typeDefinition?.locations.length).length,
+              withImplementations: comprehensiveContext.symbols.filter(s => s.implementations?.locations.length).length,
+              withReferences: comprehensiveContext.symbols.filter(s => s.references.length > 0).length,
+            };
+            console.log('[AI Review] Context analysis summary:', summary);
+          }
+
+          // If manual context files are also provided, merge them
+          if (options?.contextFiles && Array.isArray(options.contextFiles)) {
+            console.log(`[AI Review] Including ${options.contextFiles.length} additional manual context files`);
+            contextFileContents = await this.getContextFileContents(worktreePath, options.contextFiles);
+          }
+        } catch (error) {
+          console.error('[AI Review] Failed to analyze comprehensive context with Tree-sitter:', error);
+          // Fallback to manual context files if provided
+          if (options?.contextFiles && Array.isArray(options.contextFiles)) {
+            console.log(`[AI Review] Falling back to ${options.contextFiles.length} manual context files`);
+            contextFileContents = await this.getContextFileContents(worktreePath, options.contextFiles);
+          }
+        }
+      }
+
       // Create review prompt based on language and options
-      const prompt = this.createReviewPrompt(diff, changedFiles, fileContents, language, options);
+      const prompt = this.createReviewPrompt(
+        diff,
+        changedFiles,
+        fileContents,
+        language,
+        options,
+        contextFileContents,
+        contextAnalysisInfo
+      );
 
       // Call AI provider for review
       if (!this.provider) {
         throw new Error('AI provider not initialized');
       }
 
+      // Get configured model
+      const configService = getAIConfigService();
+      const settings = await configService.getProviderSettings();
+      const model = settings?.model;
+
+      if (model) {
+        console.log(`[AI Review] Using configured model: ${model}`);
+      }
+
       const response = await this.provider.review({
         prompt,
         workingDirectory: worktreePath,
-        timeout: 300000, // 5 minutes
+        model,
+        timeout: 600000, // 10 minutes (large PRs can take time)
+        language,
+        options: {
+          analyzeChangeIntent: options?.analyzeChangeIntent,
+          generateCallStack: options?.generateCallStack,
+          analyzeBroaderImpact: options?.analyzeBroaderImpact,
+          semanticDiffAnalysis: options?.semanticDiffAnalysis,
+        },
       });
 
       // Log the raw response for debugging
@@ -205,7 +291,7 @@ export class AIReviewService {
       }
 
       // Parse review results
-      const result = this.parseReviewResult(response.content, changedFiles.length);
+      const result = await this.parseReviewResult(response.content, changedFiles.length, worktreePath);
 
       console.log('[AI Review] Review completed:', {
         filesReviewed: result.filesReviewed,
@@ -215,6 +301,21 @@ export class AIReviewService {
       return result;
     } catch (error: any) {
       console.error('[AI Review] Failed to perform review:', error);
+      
+      // Detect quota/billing errors for better user feedback
+      const errorMessage = error.message?.toLowerCase() || '';
+      const isQuotaError = errorMessage.includes('quota exceeded') ||
+                          errorMessage.includes('rate limit') ||
+                          errorMessage.includes('insufficient quota') ||
+                          errorMessage.includes('billing') ||
+                          errorMessage.includes('credits') ||
+                          errorMessage.includes('usage limit');
+      
+      if (isQuotaError) {
+        // Prefix with QUOTA_EXCEEDED so frontend can show better error message
+        throw new Error(`QUOTA_EXCEEDED: ${error.message}`);
+      }
+      
       throw new Error(`AI review failed: ${error.message}`);
     }
   }
@@ -472,13 +573,59 @@ export class AIReviewService {
         }
 
         const content = await fs.readFile(filePath, 'utf-8');
-        contents.set(file, content);
+
+        // Add line numbers to file content to avoid confusion with diff hunk headers
+        const lines = content.split('\n');
+        const numberedContent = lines.map((line, index) => `${String(index + 1).padStart(4, ' ')} | ${line}`).join('\n');
+
+        contents.set(file, numberedContent);
       } catch (error) {
         console.error(`[AI Review] Failed to read ${file}:`, error);
       }
     }
 
     console.log(`[AI Review] Read ${contents.size} file contents`);
+    return contents;
+  }
+
+  /**
+   * Get context file contents (files that call or implement modified code)
+   */
+  private async getContextFileContents(worktreePath: string, contextFiles: ContextFile[]): Promise<Map<string, string>> {
+    const contents = new Map<string, string>();
+    const MAX_CONTEXT_FILES = 15; // Limit to prevent token overflow
+    const MAX_FILE_SIZE = 30000; // 30KB per context file (smaller than main files)
+
+    const filesToRead = contextFiles.slice(0, MAX_CONTEXT_FILES);
+
+    for (const contextFile of filesToRead) {
+      try {
+        const filePath = path.join(worktreePath, contextFile.path);
+        const stats = await fs.stat(filePath);
+
+        // Skip large files
+        if (stats.size > MAX_FILE_SIZE) {
+          console.log(`[AI Review] Skipping large context file: ${contextFile.path} (${stats.size} bytes)`);
+          continue;
+        }
+
+        const content = await fs.readFile(filePath, 'utf-8');
+
+        // Add line numbers and metadata
+        const lines = content.split('\n');
+        const numberedContent = lines.map((line, index) => `${String(index + 1).padStart(4, ' ')} | ${line}`).join('\n');
+
+        // Add metadata header
+        const metadata = `// Context: ${contextFile.reason} of ${contextFile.relatedSymbol} (line ${contextFile.location.line})`;
+        const fullContent = `${metadata}\n\n${numberedContent}`;
+
+        contents.set(contextFile.path, fullContent);
+      } catch (error) {
+        console.error(`[AI Review] Failed to read context file ${contextFile.path}:`, error);
+      }
+    }
+
+    console.log(`[AI Review] Read ${contents.size} context file contents`);
     return contents;
   }
 
@@ -490,7 +637,9 @@ export class AIReviewService {
     files: string[],
     fileContents: Map<string, string>,
     language: string,
-    options?: any
+    options?: any,
+    contextFileContents?: Map<string, string>,
+    contextAnalysisInfo?: string
   ): string {
     const languageInstructions = {
       en: 'Please respond in English.',
@@ -513,7 +662,8 @@ ${files.map(f => `- ${f}`).join('\n')}
 ${diff}
 \`\`\`
 
-## Full File Contents (for context):
+## Full File Contents (with line numbers for reference):
+**IMPORTANT**: Each line is prefixed with its actual line number (e.g., "   1 | code"). Always use these line numbers when reporting issues.
 ${Array.from(fileContents.entries()).map(([file, content]) => `
 ### ${file}
 \`\`\`
@@ -521,6 +671,50 @@ ${content}
 \`\`\`
 `).join('\n')}
 `;
+
+    // Add Tree-sitter based context analysis if available
+    if (contextAnalysisInfo && contextAnalysisInfo.trim().length > 0) {
+      prompt += `\n## Comprehensive Code Context (Definitions, Types, Implementations & References):
+**IMPORTANT**: This section provides deep context about modified code, showing:
+- **Definitions**: Where symbols are originally defined
+- **Type Definitions**: Type information and interfaces involved
+- **Implementations**: What classes implement modified interfaces/abstract classes
+- **References**: Where and how modified code is used throughout the codebase
+
+Generated automatically using Tree-sitter static analysis + ripgrep search.
+
+**Use this comprehensive context to:**
+- Understand the complete picture of how changes affect the codebase
+- Identify breaking changes that might affect implementations or call sites
+- Verify type compatibility and interface contracts
+- Assess impact on dependent code that uses these symbols
+- Ensure changes don't break existing implementations
+
+${contextAnalysisInfo}
+`;
+    }
+
+    // Add context files if provided
+    if (contextFileContents && contextFileContents.size > 0) {
+      prompt += `\n## Additional Context Files (For Impact Analysis Only):
+**IMPORTANT**: These files are NOT part of the PR changes. They are provided for understanding:
+- How modified code is used (callers)
+- What implementations exist (for modified interfaces/abstract classes)
+
+**DO NOT review these files for code quality issues.** Only analyze:
+- How changes in PR files might affect these files
+- Potential breaking changes
+- Impact on call sites
+- Semantic compatibility
+
+${Array.from(contextFileContents.entries()).map(([file, content]) => `
+### ${file}
+\`\`\`
+${content}
+\`\`\`
+`).join('\n')}
+`;
+    }
 
     // Add change intent analysis if requested
     if (options?.analyzeChangeIntent) {
@@ -649,14 +843,97 @@ ${options.customPrompt}
 - Good test coverage
 - Performance considerations addressed
 
-**Response Format**
-Provide your response as a structured JSON object with the following sections:
-- \`summary\`: Brief overview of the review
-- \`criticalIssues\`: Array of critical issues that must be fixed (file, line, severity, category, message)
-- \`warnings\`: Array of issues that should be fixed
-- \`suggestions\`: Array of improvements to consider${options?.analyzeChangeIntent ? '\n- `changeIntents`: Array of change intent analyses (file, level, intent, motivation, impact)' : ''}${options?.generateCallStack ? '\n- `callStacks`: Array of call stack visualizations (function, file, flowchart, sequence)' : ''}${options?.analyzeBroaderImpact ? '\n- `impactAnalysis`: Broader impact analysis (scope, affectedAreas, breakingChanges, sideEffects)' : ''}${options?.detectMovedCode ? '\n- `movedCode`: Array of moved code blocks (from, to, lines)' : ''}${options?.detectRefactoring ? '\n- `refactorings`: Array of refactoring patterns (type, description, files)' : ''}
+## Output Format (MANDATORY):
+You MUST respond with a valid JSON object. Do not include any explanatory text outside the JSON object.
+The JSON object must follow this structure:
 
-- File path and line number
+\`\`\`json
+{
+  "summary": "High-level summary of the changes and overall quality assessment (in requested language)",
+  "criticalIssues": [
+    {
+      "file": "path/to/file.ts",
+      "line": 123,
+      "severity": "critical",
+      "category": "Security|Performance|Correctness",
+      "message": "Description of the critical issue",
+      "suggestion": "Code improvement suggestion"
+    }
+  ],
+  "warnings": [
+    {
+      "file": "path/to/file.ts",
+      "line": 123,
+      "severity": "warning",
+      "category": "Code Quality|Maintainability",
+      "message": "Description of the warning",
+      "suggestion": "Code improvement suggestion"
+    }
+  ],
+  "suggestions": [
+    {
+      "file": "path/to/file.ts",
+      "line": 123,
+      "severity": "suggestion",
+      "category": "Style|Best Practice",
+      "message": "Description of the suggestion",
+      "suggestion": "Code improvement suggestion"
+    }
+  ],
+  "changeIntents": [
+    // Only if change intent analysis is enabled
+    {
+      "file": "path/to/file.ts",
+      "level": "file|block",
+      "intent": "Brief description of intent",
+      "motivation": "Why this change was made",
+      "impact": "Impact on system"
+    }
+  ],
+  "callStacks": [
+    // Only if call stack generation is enabled
+    {
+      "function": "functionName",
+      "file": "path/to/file.ts",
+      "flowchart": "Mermaid flowchart definition",
+      "sequence": "Mermaid sequence diagram definition"
+    }
+  ],
+  "impactAnalysis": {
+    // Only if impact analysis is enabled
+    "scope": "module|project",
+    "affectedAreas": ["Area 1", "Area 2"],
+    "breakingChanges": ["Possible breaking change 1"],
+    "sideEffects": ["Potential side effect 1"]
+  },
+  "movedCode": [
+    // Only if moved code detection is enabled
+    {
+      "from": "source/file.ts",
+      "to": "dest/file.ts",
+      "lines": 10
+    }
+  ],
+  "refactorings": [
+    // Only if refactoring detection is enabled
+    {
+      "type": "Extract Method",
+      "description": "Description of refactoring",
+      "files": ["file1.ts", "file2.ts"]
+    }
+  ]
+}
+\`\`\`
+
+Ensure all strings are properly escaped for JSON.
+
+**CRITICAL**: When specifying line numbers for issues:
+- Use the ACTUAL line numbers from the "Full File Contents" section (the numbers before the | symbol)
+- DO NOT use line numbers from the git diff (@@) headers
+- Example: If you see "  79 | where.not(key_name: ...", report line 79, not any other number
+
+For each issue, provide:
+- File path and line number (from Full File Contents)
 - Severity (critical/warning/suggestion)
 - Category (Security, Performance, Code Quality, etc.)
 - Clear description of the issue
@@ -668,23 +945,125 @@ Be specific and actionable in your feedback. Focus on the most important issues 
   }
 
   /**
+   * Validate and correct line numbers in review comments
+   */
+  private async validateLineNumbers(
+    comments: ReviewComment[],
+    worktreePath: string
+  ): Promise<ReviewComment[]> {
+    const validatedComments: ReviewComment[] = [];
+
+    for (const comment of comments) {
+      try {
+        const filePath = path.join(worktreePath, comment.file);
+        const content = await fs.readFile(filePath, 'utf-8');
+        const totalLines = content.split('\n').length;
+
+        if (comment.line > totalLines) {
+          console.warn(
+            `[AI Review] Invalid line number: ${comment.file}:${comment.line} (file has only ${totalLines} lines)`
+          );
+          console.warn(`[AI Review] Issue: ${comment.message.substring(0, 100)}`);
+
+          // Try to find the correct line by searching for keywords in the message
+          const correctedLine = await this.findCorrectLine(filePath, comment, totalLines);
+
+          if (correctedLine > 0) {
+            console.log(
+              `[AI Review] Corrected line number: ${comment.file}:${comment.line} -> ${correctedLine}`
+            );
+            validatedComments.push({
+              ...comment,
+              line: correctedLine,
+            });
+          } else {
+            // If we can't correct it, use line 1 but add a warning to the message
+            validatedComments.push({
+              ...comment,
+              line: 1,
+              message: `[Line number was invalid (${comment.line}), review entire file] ${comment.message}`,
+            });
+          }
+        } else {
+          validatedComments.push(comment);
+        }
+      } catch (error) {
+        console.error(`[AI Review] Failed to validate line number for ${comment.file}:`, error);
+        // Keep the comment as-is if validation fails
+        validatedComments.push(comment);
+      }
+    }
+
+    return validatedComments;
+  }
+
+  /**
+   * Try to find the correct line by searching for code patterns in the message
+   */
+  private async findCorrectLine(
+    filePath: string,
+    comment: ReviewComment,
+    totalLines: number
+  ): Promise<number> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+
+      // Extract potential code snippets from the message
+      const codePatterns: string[] = [];
+
+      // Look for code in backticks
+      const backtickMatches = comment.message.matchAll(/`([^`]+)`/g);
+      for (const match of backtickMatches) {
+        if (match[1] && match[1].length > 3 && match[1].length < 100) {
+          codePatterns.push(match[1].trim());
+        }
+      }
+
+      // Look for keywords like "where.not", "key_name", etc.
+      const keywordMatches = comment.message.match(/\b(\w+\.\w+|\w+\s*\([^)]*\))/g);
+      if (keywordMatches) {
+        codePatterns.push(...keywordMatches.filter(k => k.length > 3));
+      }
+
+      // Search for these patterns in the file
+      for (const pattern of codePatterns) {
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(pattern)) {
+            return i + 1; // Return 1-based line number
+          }
+        }
+      }
+
+      return -1; // Couldn't find a match
+    } catch (error) {
+      console.error('[AI Review] Failed to find correct line:', error);
+      return -1;
+    }
+  }
+
+  /**
    * Parse review result from AI provider's response
    * Tries JSON format first, then falls back to text parsing
    */
-  private parseReviewResult(reviewText: string, filesCount: number): ReviewResult {
+  private async parseReviewResult(reviewText: string, filesCount: number, worktreePath: string): Promise<ReviewResult> {
     // Try JSON parsing first
     const jsonResult = this.tryParseJSON(reviewText);
     if (jsonResult) {
       console.log('[AI Review Parser] Successfully parsed JSON response');
+
+      // Validate line numbers for JSON response
+      const validatedCritical = await this.validateLineNumbers(jsonResult.criticalIssues || [], worktreePath);
+      const validatedWarnings = await this.validateLineNumbers(jsonResult.warnings || [], worktreePath);
+      const validatedSuggestions = await this.validateLineNumbers(jsonResult.suggestions || [], worktreePath);
+
       return {
         summary: jsonResult.summary || 'Review completed',
-        criticalIssues: jsonResult.criticalIssues || [],
-        warnings: jsonResult.warnings || [],
-        suggestions: jsonResult.suggestions || [],
+        criticalIssues: validatedCritical,
+        warnings: validatedWarnings,
+        suggestions: validatedSuggestions,
         filesReviewed: filesCount,
-        totalIssues: (jsonResult.criticalIssues?.length || 0) +
-                     (jsonResult.warnings?.length || 0) +
-                     (jsonResult.suggestions?.length || 0),
+        totalIssues: validatedCritical.length + validatedWarnings.length + validatedSuggestions.length,
         changeIntents: jsonResult.changeIntents,
         callStacks: jsonResult.callStacks,
         impactAnalysis: jsonResult.impactAnalysis,
@@ -757,27 +1136,40 @@ Be specific and actionable in your feedback. Focus on the most important issues 
       }
     }
 
-    // If no issues found in structured format, try Korean format first, then generic parsing
+      // If no issues found in structured format, try Korean format first, then generic parsing
     if (criticalIssues.length === 0 && warnings.length === 0 && suggestions.length === 0) {
-      console.log('[AI Review Parser] No structured sections found, trying Korean format...');
-      const koreanComments = AIReviewKoreanParser.parseKoreanFormat(reviewText);
-
-      if (koreanComments.length > 0) {
-        // Separate by severity
-        koreanComments.forEach(comment => {
-          if (comment.severity === 'critical') {
-            criticalIssues.push(comment);
-          } else if (comment.severity === 'warning') {
-            warnings.push(comment);
-          } else {
-            suggestions.push(comment);
-          }
+      console.log('[AI Review Parser] No structured sections found, trying Markdown Table format...');
+      const tableComments = this.parseMarkdownTableComments(reviewText);
+      
+      if (tableComments.length > 0) {
+        console.log(`[AI Review Parser] Markdown Table parsing extracted ${tableComments.length} comments`);
+        // Distribute by severity
+        tableComments.forEach(c => {
+           if (c.severity === 'critical') criticalIssues.push(c);
+           else if (c.severity === 'warning') warnings.push(c);
+           else suggestions.push(c);
         });
-        console.log(`[AI Review Parser] Korean format extracted ${koreanComments.length} comments`);
       } else {
-        console.log('[AI Review Parser] Korean format failed, trying generic parsing...');
-        const genericComments = this.parseGenericComments(reviewText);
-        suggestions.push(...genericComments);
+        console.log('[AI Review Parser] Markdown Table parsing failed, trying Korean format...');
+        const koreanComments = AIReviewKoreanParser.parseKoreanFormat(reviewText);
+
+        if (koreanComments.length > 0) {
+          // Separate by severity
+          koreanComments.forEach(comment => {
+            if (comment.severity === 'critical') {
+              criticalIssues.push(comment);
+            } else if (comment.severity === 'warning') {
+              warnings.push(comment);
+            } else {
+              suggestions.push(comment);
+            }
+          });
+          console.log(`[AI Review Parser] Korean format extracted ${koreanComments.length} comments`);
+        } else {
+          console.log('[AI Review Parser] Korean format failed, trying generic parsing...');
+          const genericComments = this.parseGenericComments(reviewText);
+          suggestions.push(...genericComments);
+        }
       }
     }
 
@@ -788,13 +1180,18 @@ Be specific and actionable in your feedback. Focus on the most important issues 
     const movedCode = AIReviewParser.extractMovedCode(reviewText);
     const refactorings = AIReviewParser.extractRefactorings(reviewText);
 
+    // Validate line numbers for text-parsed comments
+    const validatedCritical = await this.validateLineNumbers(criticalIssues, worktreePath);
+    const validatedWarnings = await this.validateLineNumbers(warnings, worktreePath);
+    const validatedSuggestions = await this.validateLineNumbers(suggestions, worktreePath);
+
     return {
       summary,
-      criticalIssues,
-      warnings,
-      suggestions,
+      criticalIssues: validatedCritical,
+      warnings: validatedWarnings,
+      suggestions: validatedSuggestions,
       filesReviewed: filesCount,
-      totalIssues: criticalIssues.length + warnings.length + suggestions.length,
+      totalIssues: validatedCritical.length + validatedWarnings.length + validatedSuggestions.length,
       // Enhanced sections
       changeIntents: changeIntents.length > 0 ? changeIntents : undefined,
       callStacks: callStacks.length > 0 ? callStacks : undefined,
@@ -802,6 +1199,75 @@ Be specific and actionable in your feedback. Focus on the most important issues 
       movedCode: movedCode.length > 0 ? movedCode : undefined,
       refactorings: refactorings.length > 0 ? refactorings : undefined,
     };
+  }
+
+  /**
+   * Parse Markdown tables from review text
+   * Handles formats like:
+   * ### 1. File (path)
+   * | Line | Issue | Impact | Fix |
+   */
+  private parseMarkdownTableComments(text: string): ReviewComment[] {
+    const comments: ReviewComment[] = [];
+    const lines = text.split('\n');
+    let currentFile = '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      // Extract file from header like "### 1. `ClassName` (path/to/file.rb)"
+      // or "### 1. path/to/file.rb"
+      const headerMatch = line.match(/^###\s+\d+\.\s+(?:`[^`]+`\s+)?(?:\(([^)]+)\)|(\S+))/);
+      if (headerMatch) {
+         // Group 1 is content inside parens, Group 2 is direct path
+        const pathCandidate = headerMatch[1] || headerMatch[2];
+        if (pathCandidate && (pathCandidate.includes('/') || pathCandidate.includes('.'))) {
+          currentFile = pathCandidate.trim();
+          continue;
+        }
+      }
+
+      // Detect table row: | 123 | Issue | ... |
+      if (currentFile && line.startsWith('|') && line.endsWith('|')) {
+        // Skip header and separator lines
+        if (line.includes('---') || line.match(/\|\s*(?:Line|라인|문제점|Issue)\s*\|/i)) {
+          continue;
+        }
+
+        const cols = line.split('|').map(c => c.trim()).filter(c => c !== '');
+        if (cols.length >= 2) {
+          // Heuristic: First column is usually line number
+          const lineNumStr = cols[0];
+          const lineNum = parseInt(lineNumStr.replace(/[^0-9]/g, ''), 10);
+
+          if (!isNaN(lineNum)) {
+             // Assume Col 2 is the message/issue
+             const message = cols[1];
+             // Assume last column is suggestion/fix if available
+             const suggestion = cols.length > 2 ? cols[cols.length - 1] : undefined;
+             
+             // Determine severity based on message content
+             let severity: 'critical' | 'warning' | 'suggestion' = 'warning';
+             // If message mentions typical warning keywords, or is just a suggestion
+             if (message.length < 20 && suggestion && suggestion.length > message.length) {
+                // If message is short but suggestion is long, it might be just a suggestion
+                severity = 'suggestion';
+             }
+
+             comments.push({
+               file: currentFile,
+               line: lineNum,
+               severity,
+               category: 'Code Quality',
+               message: message,
+               suggestion: suggestion
+             });
+          }
+        }
+      }
+    }
+    
+    return comments;
   }
 
   /**
@@ -1100,7 +1566,41 @@ Be specific and actionable in your feedback. Focus on the most important issues 
   }
 
   /**
+   * Parse line number from various formats
+   * Handles: number, "123", "file:123", etc.
+   */
+  private parseLineNumber(line: any): number {
+    // If already a valid number, return it
+    if (typeof line === 'number' && line > 0) {
+      return line;
+    }
+
+    // If string, try to parse
+    if (typeof line === 'string') {
+      // Check if it's in "file:line" format
+      if (line.includes(':')) {
+        const parts = line.split(':');
+        const lastPart = parts[parts.length - 1].trim();
+        const parsed = parseInt(lastPart, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          return parsed;
+        }
+      }
+
+      // Try direct parsing
+      const parsed = parseInt(line, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    // Default to line 1 if parsing fails
+    return 1;
+  }
+
+  /**
    * Validate and normalize comment array
+   * Handles alternative field names from different AI models
    */
   private validateComments(comments: any[], defaultSeverity: 'critical' | 'warning' | 'suggestion'): ReviewComment[] {
     if (!Array.isArray(comments)) {
@@ -1108,23 +1608,29 @@ Be specific and actionable in your feedback. Focus on the most important issues 
     }
 
     return comments
-      .filter((comment: any) =>
-        comment &&
-        typeof comment === 'object' &&
-        comment.file &&
-        comment.message &&
-        comment.message.length >= 10
-      )
-      .map((comment: any) => ({
-        file: String(comment.file),
-        line: typeof comment.line === 'number' ? comment.line : 1,
-        severity: comment.severity === 'critical' || comment.severity === 'warning' || comment.severity === 'suggestion'
-          ? comment.severity
-          : defaultSeverity,
-        category: comment.category ? String(comment.category) : 'Code Review',
-        message: String(comment.message),
-        suggestion: comment.suggestion ? String(comment.suggestion) : undefined,
-      }));
+      .filter((comment: any) => {
+        if (!comment || typeof comment !== 'object') return false;
+        // Accept either 'message' or 'description' field
+        const hasMessage = comment.message || comment.description;
+        return hasMessage && String(hasMessage).length >= 5;
+      })
+      .map((comment: any) => {
+        // Map alternative field names
+        const message = comment.message || comment.description || '';
+        const file = comment.file || comment.path || 'unknown';
+        const line = this.parseLineNumber(comment.line || comment.lineNumber || comment.issue || 1);
+        
+        return {
+          file: String(file),
+          line,
+          severity: comment.severity === 'critical' || comment.severity === 'warning' || comment.severity === 'suggestion'
+            ? comment.severity
+            : defaultSeverity,
+          category: comment.category ? String(comment.category) : 'Code Review',
+          message: String(message),
+          suggestion: comment.suggestion ? String(comment.suggestion) : undefined,
+        };
+      });
   }
 
   /**

@@ -55,4 +55,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return reply.status(500).send({ error: 'Failed to update AI provider' });
     }
   });
+
 }
+

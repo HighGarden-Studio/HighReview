@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { CallStackVisualization } from './CallStackVisualization';
@@ -90,6 +91,7 @@ export function EnhancedAIReviewPanel({
     diagramType: 'flowchart' | 'sequence' | 'both';
   } | null>(null);
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
+  const [expandedMovedCodeIndices, setExpandedMovedCodeIndices] = useState<Set<number>>(new Set());
 
   // Handle highlighted item from editor glyph margin clicks
   useEffect(() => {
@@ -110,10 +112,11 @@ export function EnhancedAIReviewPanel({
         const element = document.getElementById(itemId);
         if (element) {
           element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          // Add temporary highlight animation
-          element.classList.add('highlight-flash');
+          // Add temporary highlight animation with severity-specific color
+          const highlightClass = `highlight-flash-${issue.severity}`;
+          element.classList.add(highlightClass);
           setTimeout(() => {
-            element.classList.remove('highlight-flash');
+            element.classList.remove(highlightClass);
             setHighlightedItemId(null);
           }, 2000);
         }
@@ -130,10 +133,10 @@ export function EnhancedAIReviewPanel({
         const element = document.getElementById(itemId);
         if (element) {
           element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          // Add temporary highlight animation
-          element.classList.add('highlight-flash');
+          // Add temporary highlight animation (blue for call stacks)
+          element.classList.add('highlight-flash-suggestion');
           setTimeout(() => {
-            element.classList.remove('highlight-flash');
+            element.classList.remove('highlight-flash-suggestion');
             setHighlightedItemId(null);
           }, 2000);
         }
@@ -184,27 +187,53 @@ export function EnhancedAIReviewPanel({
     }
   };
 
+  // Preprocess content to ensure proper formatting
+  const preprocessContent = (content: string): string => {
+    let processed = content;
+
+    // Ensure proper spacing after periods followed by capital letters (sentence boundaries)
+    processed = processed.replace(/\.([A-Z])/g, '.\n\n$1');
+
+    // Ensure bullet points and numbered lists have proper breaks
+    processed = processed.replace(/([^\n])\n(\d+\.|[-*])/g, '$1\n\n$2');
+
+    // Ensure proper spacing after colons followed by descriptions
+    processed = processed.replace(/:([A-Z][a-z])/g, ':\n$1');
+
+    // Remove excessive consecutive line breaks (more than 2)
+    processed = processed.replace(/\n{3,}/g, '\n\n');
+
+    return processed;
+  };
+
   const renderMarkdown = (content: string) => {
-    // Decode unicode escape sequences before rendering
+    // Decode unicode escape sequences and preprocess content
     const decodedContent = decodeUnicode(content);
+    const formattedContent = preprocessContent(decodedContent);
 
     return (
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
+          pre: ({ children }) => <div className="my-4 not-prose">{children}</div>,
           code({ node, inline, className, children, ...props }) {
             const match = /language-(\w+)/.exec(className || '');
-            return !inline && match ? (
-              <SyntaxHighlighter
-                style={vscDarkPlus}
-                language={match[1]}
-                PreTag="div"
-                className="rounded-lg !my-2"
-                {...props}
-              >
-                {String(children).replace(/\n$/, '')}
-              </SyntaxHighlighter>
-            ) : (
+            // Only use SyntaxHighlighter for block code with language
+            if (!inline && className && match) {
+              return (
+                <SyntaxHighlighter
+                  style={vscDarkPlus}
+                  language={match[1]}
+                  PreTag="div"
+                  className="rounded-lg !my-2"
+                  {...props}
+                >
+                  {String(children).replace(/\n$/, '')}
+                </SyntaxHighlighter>
+              );
+            }
+            // Inline code
+            return (
               <code
                 className={`${className} px-1 py-0.5 rounded bg-light-surface dark:bg-dark-surface text-light-accent-primary dark:text-dark-accent-primary font-mono text-xs`}
                 {...props}
@@ -213,23 +242,44 @@ export function EnhancedAIReviewPanel({
               </code>
             );
           },
-          p: ({ children }) => (
-            <p className="text-sm text-light-text-secondary dark:text-dark-text-secondary leading-relaxed mb-2">
+          p: ({ node, children, ...props }) => {
+            const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
+              return child?.props?.className?.includes('language-');
+            });
+            const Element = hasCodeBlock ? 'div' : 'p';
+            return (
+              <Element className="text-sm text-light-text-secondary dark:text-dark-text-secondary leading-loose mb-4" {...props}>
+                {children}
+              </Element>
+            );
+          },
+          h1: ({ children }) => (
+            <h1 className="text-lg font-bold text-light-text-primary dark:text-dark-text-primary mt-6 mb-3">
               {children}
-            </p>
+            </h1>
+          ),
+          h2: ({ children }) => (
+            <h2 className="text-base font-bold text-light-text-primary dark:text-dark-text-primary mt-5 mb-2">
+              {children}
+            </h2>
+          ),
+          h3: ({ children }) => (
+            <h3 className="text-sm font-semibold text-light-text-primary dark:text-dark-text-primary mt-4 mb-2">
+              {children}
+            </h3>
           ),
           ul: ({ children }) => (
-            <ul className="list-disc list-inside space-y-1 text-sm text-light-text-secondary dark:text-dark-text-secondary mb-2">
+            <ul className="list-disc list-inside space-y-2 text-sm text-light-text-secondary dark:text-dark-text-secondary mb-4 ml-2">
               {children}
             </ul>
           ),
           ol: ({ children }) => (
-            <ol className="list-decimal list-inside space-y-1 text-sm text-light-text-secondary dark:text-dark-text-secondary mb-2">
+            <ol className="list-decimal list-inside space-y-2 text-sm text-light-text-secondary dark:text-dark-text-secondary mb-4 ml-2">
               {children}
             </ol>
           ),
           li: ({ children }) => (
-            <li className="text-sm text-light-text-secondary dark:text-dark-text-secondary">
+            <li className="text-sm text-light-text-secondary dark:text-dark-text-secondary leading-relaxed">
               {children}
             </li>
           ),
@@ -244,7 +294,7 @@ export function EnhancedAIReviewPanel({
             </em>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-4 py-2 my-2 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-r">
+            <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-4 py-2 my-4 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-r">
               {children}
             </blockquote>
           ),
@@ -260,7 +310,7 @@ export function EnhancedAIReviewPanel({
           ),
         }}
       >
-        {decodedContent}
+        {formattedContent}
       </ReactMarkdown>
     );
   };
@@ -422,7 +472,7 @@ export function EnhancedAIReviewPanel({
                     </div>
                     <button
                       onClick={() => handleFileClick(issue.file, issue.line)}
-                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-all w-full"
+                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-words w-full"
                     >
                       {issue.file}:{issue.line}
                     </button>
@@ -467,7 +517,7 @@ export function EnhancedAIReviewPanel({
                     </div>
                     <button
                       onClick={() => handleFileClick(issue.file, issue.line)}
-                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-all w-full"
+                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-words w-full"
                     >
                       {issue.file}:{issue.line}
                     </button>
@@ -512,7 +562,7 @@ export function EnhancedAIReviewPanel({
                     </div>
                     <button
                       onClick={() => handleFileClick(issue.file, issue.line)}
-                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-all w-full"
+                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-words w-full"
                     >
                       {issue.file}:{issue.line}
                     </button>
@@ -542,14 +592,14 @@ export function EnhancedAIReviewPanel({
                 key={idx}
                 className="p-4 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border"
               >
-                <div className="flex items-start gap-2 mb-2">
-                  <span className="px-2 py-0.5 text-xs font-semibold rounded bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary">
-                    {intent.level.toUpperCase()}
+                <div className="flex flex-wrap items-start gap-2 mb-2">
+                  <span className="px-2 py-0.5 text-xs font-semibold rounded bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary flex-shrink-0">
+                    {(intent.level || 'FILE').toUpperCase()}
                   </span>
                   {intent.file && (
                     <button
                       onClick={() => handleFileClick(intent.file!)}
-                      className="text-xs font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline"
+                      className="text-xs font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline text-left break-words"
                     >
                       {intent.file}
                     </button>
@@ -614,7 +664,7 @@ export function EnhancedAIReviewPanel({
                   </h5>
                   <button
                     onClick={() => handleFileClick(callStack.file, undefined, callStack.function)}
-                    className="text-xs font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline"
+                    className="text-xs font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline text-left break-words w-full"
                   >
                     {callStack.file}
                   </button>
@@ -651,8 +701,8 @@ export function EnhancedAIReviewPanel({
                   <ul className="space-y-1">
                     {review.impactAnalysis.affectedAreas.map((area, idx) => (
                       <li key={idx} className="text-sm text-light-text-primary dark:text-dark-text-primary flex items-start gap-2">
-                        <span className="text-light-accent-primary dark:text-dark-accent-primary">•</span>
-                        {area}
+                        <span className="text-light-accent-primary dark:text-dark-accent-primary flex-shrink-0">•</span>
+                        <span className="break-words">{area}</span>
                       </li>
                     ))}
                   </ul>
@@ -667,8 +717,8 @@ export function EnhancedAIReviewPanel({
                   <ul className="space-y-1">
                     {review.impactAnalysis.breakingChanges.map((change, idx) => (
                       <li key={idx} className="text-sm text-light-text-primary dark:text-dark-text-primary flex items-start gap-2">
-                        <span className="text-light-accent-error dark:text-dark-accent-error">•</span>
-                        {change}
+                        <span className="text-light-accent-error dark:text-dark-accent-error flex-shrink-0">•</span>
+                        <span className="break-words">{change}</span>
                       </li>
                     ))}
                   </ul>
@@ -683,8 +733,8 @@ export function EnhancedAIReviewPanel({
                   <ul className="space-y-1">
                     {review.impactAnalysis.sideEffects.map((effect, idx) => (
                       <li key={idx} className="text-sm text-light-text-primary dark:text-dark-text-primary flex items-start gap-2">
-                        <span className="text-light-accent-warning dark:text-dark-accent-warning">•</span>
-                        {effect}
+                        <span className="text-light-accent-warning dark:text-dark-accent-warning flex-shrink-0">•</span>
+                        <span className="break-words">{effect}</span>
                       </li>
                     ))}
                   </ul>
@@ -705,31 +755,150 @@ export function EnhancedAIReviewPanel({
                   </span>
                   Moved Code ({review.movedCode.length})
                 </h4>
-                {review.movedCode.map((move, idx) => (
-                  <div
-                    key={idx}
-                    className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border"
-                  >
-                    <div className="flex items-center gap-2 text-sm">
-                      <button
-                        onClick={() => handleFileClick(move.from)}
-                        className="font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline"
-                      >
-                        {move.from}
-                      </button>
-                      <span className="text-light-accent-primary dark:text-dark-accent-primary">→</span>
-                      <button
-                        onClick={() => handleFileClick(move.to)}
-                        className="font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline"
-                      >
-                        {move.to}
-                      </button>
-                      <span className="ml-auto px-2 py-0.5 text-xs rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary">
-                        {move.lines} lines
-                      </span>
+                {review.movedCode.map((move, idx) => {
+                  const isExpanded = expandedMovedCodeIndices.has(idx);
+
+                  const toggleExpanded = () => {
+                    const newSet = new Set(expandedMovedCodeIndices);
+                    if (isExpanded) {
+                      newSet.delete(idx);
+                    } else {
+                      newSet.add(idx);
+                    }
+                    setExpandedMovedCodeIndices(newSet);
+                  };
+
+                  // Parse from and to to extract file path and line/code info
+                  const parseLocation = (location: string) => {
+                    // Format: "file/path.rb:LINE" or "file/path.rb:code_info"
+                    const colonIndex = location.indexOf(':');
+                    if (colonIndex > 0) {
+                      const filePath = location.substring(0, colonIndex);
+                      const info = location.substring(colonIndex + 1);
+                      const lineMatch = info.match(/^(\d+)/);
+                      const line = lineMatch ? parseInt(lineMatch[1]) : undefined;
+                      return { filePath, info, line };
+                    }
+                    return { filePath: location, info: '', line: undefined };
+                  };
+
+                  const fromParsed = parseLocation(move.from);
+                  const toParsed = parseLocation(move.to);
+
+                  return (
+                    <div
+                      key={idx}
+                      className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border"
+                    >
+                      <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
+                        {/* From location */}
+                        <div className="space-y-1">
+                          <button
+                            onClick={() => handleFileClick(fromParsed.filePath, fromParsed.line)}
+                            className="text-left w-full font-mono text-xs text-light-accent-primary dark:text-dark-accent-primary hover:underline break-words"
+                            title={fromParsed.line ? `Jump to line ${fromParsed.line}` : 'Open file'}
+                          >
+                            {fromParsed.filePath}
+                            {fromParsed.line && (
+                              <span className="ml-1 text-light-text-secondary dark:text-dark-text-secondary">
+                                :{fromParsed.line}
+                              </span>
+                            )}
+                          </button>
+                          {fromParsed.info && (
+                            <div className="text-xs text-light-text-secondary dark:text-dark-text-secondary break-words">
+                              {fromParsed.info}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Arrow */}
+                        <div className="flex flex-col items-center gap-1 text-light-accent-primary dark:text-dark-accent-primary">
+                          <span className="text-lg">→</span>
+                          <button
+                            onClick={toggleExpanded}
+                            className="px-2 py-0.5 text-xs rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary hover:bg-light-accent-primary/10 dark:hover:bg-dark-accent-primary/10 whitespace-nowrap transition-colors"
+                            title={isExpanded ? 'Hide details' : 'Show details'}
+                          >
+                            {isExpanded ? '▼' : '▶'} {move.lines} lines
+                          </button>
+                        </div>
+
+                        {/* To location */}
+                        <div className="space-y-1">
+                          <button
+                            onClick={() => handleFileClick(toParsed.filePath, toParsed.line)}
+                            className="text-left w-full font-mono text-xs text-light-accent-primary dark:text-dark-accent-primary hover:underline break-words"
+                            title={toParsed.line ? `Jump to line ${toParsed.line}` : 'Open file'}
+                          >
+                            {toParsed.filePath}
+                            {toParsed.line && (
+                              <span className="ml-1 text-light-text-secondary dark:text-dark-text-secondary">
+                                :{toParsed.line}
+                              </span>
+                            )}
+                          </button>
+                          {toParsed.info && (
+                            <div className="text-xs text-light-text-secondary dark:text-dark-text-secondary break-words">
+                              {toParsed.info}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Expanded details */}
+                      {isExpanded && (
+                        <div className="mt-3 pt-3 border-t border-light-border dark:border-dark-border">
+                          <div className="grid grid-cols-2 gap-4 text-xs">
+                            <div>
+                              <div className="font-semibold text-light-text-primary dark:text-dark-text-primary mb-1">
+                                From:
+                              </div>
+                              <div className="space-y-1">
+                                <div className="font-mono text-light-text-secondary dark:text-dark-text-secondary">
+                                  📁 {fromParsed.filePath}
+                                </div>
+                                {fromParsed.line && (
+                                  <div className="text-light-text-secondary dark:text-dark-text-secondary">
+                                    📍 Line {fromParsed.line}
+                                  </div>
+                                )}
+                                {fromParsed.info && (
+                                  <div className="text-light-text-secondary dark:text-dark-text-secondary break-words">
+                                    💡 {fromParsed.info}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="font-semibold text-light-text-primary dark:text-dark-text-primary mb-1">
+                                To:
+                              </div>
+                              <div className="space-y-1">
+                                <div className="font-mono text-light-text-secondary dark:text-dark-text-secondary">
+                                  📁 {toParsed.filePath}
+                                </div>
+                                {toParsed.line && (
+                                  <div className="text-light-text-secondary dark:text-dark-text-secondary">
+                                    📍 Line {toParsed.line}
+                                  </div>
+                                )}
+                                {toParsed.info && (
+                                  <div className="text-light-text-secondary dark:text-dark-text-secondary break-words">
+                                    💡 {toParsed.info}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-2 p-2 bg-light-accent-primary/5 dark:bg-dark-accent-primary/5 rounded text-xs text-light-text-secondary dark:text-dark-text-secondary">
+                            💡 Click on file paths above to navigate to the exact location in the code
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -838,7 +1007,25 @@ export function EnhancedAIReviewPanel({
 
       {/* Highlight animation */}
       <style>{`
-        @keyframes highlight-pulse {
+        @keyframes highlight-pulse-critical {
+          0%, 100% {
+            box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
+          }
+          50% {
+            box-shadow: 0 0 0 10px rgba(220, 38, 38, 0);
+          }
+        }
+
+        @keyframes highlight-pulse-warning {
+          0%, 100% {
+            box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+          }
+          50% {
+            box-shadow: 0 0 0 10px rgba(245, 158, 11, 0);
+          }
+        }
+
+        @keyframes highlight-pulse-suggestion {
           0%, 100% {
             box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
           }
@@ -847,8 +1034,18 @@ export function EnhancedAIReviewPanel({
           }
         }
 
-        .highlight-flash {
-          animation: highlight-pulse 1s ease-in-out 2;
+        .highlight-flash-critical {
+          animation: highlight-pulse-critical 1s ease-in-out 2;
+          box-shadow: 0 0 20px rgba(220, 38, 38, 0.8) !important;
+        }
+
+        .highlight-flash-warning {
+          animation: highlight-pulse-warning 1s ease-in-out 2;
+          box-shadow: 0 0 20px rgba(245, 158, 11, 0.8) !important;
+        }
+
+        .highlight-flash-suggestion {
+          animation: highlight-pulse-suggestion 1s ease-in-out 2;
           box-shadow: 0 0 20px rgba(59, 130, 246, 0.8) !important;
         }
       `}</style>

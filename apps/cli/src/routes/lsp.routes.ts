@@ -41,9 +41,8 @@ export async function lspRoutes(fastify: FastifyInstance) {
   });
 
   // WebSocket endpoint for LSP communication
-  fastify.get('/lsp', { websocket: true }, (connection, req) => {
-    const { socket } = connection;
-
+  fastify.get('/lsp', { websocket: true }, async (socket /* WebSocket */, req) => {
+    // In @fastify/websocket v11, the first argument is already the raw WebSocket
     // Get workspace root and language from query parameters
     const url = new URL(req.url || '', `http://${req.headers.host}`);
     const workspaceRoot = url.searchParams.get('workspaceRoot');
@@ -58,7 +57,7 @@ export async function lspRoutes(fastify: FastifyInstance) {
     console.log(`[LSP] WebSocket connection established for workspace: ${workspaceRoot}, language: ${language}`);
 
     try {
-      lspService.startLanguageServer(socket as any, workspaceRoot, language);
+      await lspService.startLanguageServer(socket as any, workspaceRoot, language);
     } catch (error) {
       console.error('[LSP] Failed to start language server:', error);
       socket.close(1011, 'Failed to start language server');

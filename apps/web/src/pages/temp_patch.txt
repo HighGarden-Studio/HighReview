@@ -1,0 +1,98 @@
+--- a/ReviewPage.tsx
++++ b/ReviewPage.tsx
+@@ -395,109 +395,14 @@ export function ReviewPage({
+     }
+   }, [selectedFile, contentData, showDiff, diffData, isPRFile, effectiveRepoRoot, prInfo]);
+ 
+-  // Load full project for LSP indexing
++  // DISABLED: Load full project for LSP indexing (now using Tree-sitter)
+   useEffect(() => {
+-    const loadFullProject = async () => {
+-      if (!prInfo || !worktreePath || !repoRoot || !baseBranch) {
+-        return;
+-      }
+-
+-      try {
+-        // Check cache first
+-        const cache = await getIndexingCache(prInfo.owner, prInfo.repo);
+-        const isIndexed = await hasValidIndexingCache(prInfo.owner, prInfo.repo);
+-
+-        // Verify that Monaco actually has models loaded
+-        // If cache says indexed but Monaco has very few models, re-index
+-        const currentModelCount = monaco.editor.getModels().length;
+-        // Use cached file count as baseline (allow 85% tolerance for missing models)
+-        const cachedFileCount = cache?.loadedFiles || 0;
+-        const expectedMinModels = Math.floor(cachedFileCount * 0.85);
+-
+-        if (isIndexed && cachedFileCount > 0 && currentModelCount >= expectedMinModels) {
+-
+-          // Still need to wait for LSP server to be ready
+-          setAIReviewStep('lsp-ready');
+-      //         console.log('[ReviewPage] Waiting for LSP server to be ready (10 seconds)...');
+-          await new Promise(resolve => setTimeout(resolve, 10000));
+-
+-          setAIReviewStep('preparing');
+-          return;
+-        }
+-
+-        if (isIndexed && currentModelCount < expectedMinModels) {
+-        } else {
+-        }
+-
+-        setAIReviewStep('indexing');
+-
+-        // Load all project files
+-        const result = await loadFullProjectIntoMonaco(
+-          worktreePath,
+-          repoRoot,
+-          (current, total, currentFile) => {
+-            // Update progress
+-            setIndexingProgress({ current, total });
+-          }
+-        );
+-
+-
+-        // Save to cache
+-        await setIndexingCache(prInfo.owner, prInfo.repo, {
+-          lastIndexed: Date.now(),
+-          totalFiles: result.totalFiles,
+-          loadedFiles: result.loadedFiles,
+-          baseBranch: baseBranch,
+-          headSha: prData?.pullRequest?.headRefOid
+-        });
+-
+-        // Move to LSP ready step - wait for LSP server to process files
+-        setAIReviewStep('lsp-ready');
+-      //         console.log('[ReviewPage] Waiting for LSP server to process files (15 seconds)...');
+-
+-        // Wait 15 seconds for LSP server to analyze all files
+-        await new Promise(resolve => setTimeout(resolve, 15000));
+-
+-        setAIReviewStep('preparing');
+-      } catch (error) {
+-        console.error('[ReviewPage] Failed to load full project:', error);
+-
+-        // Still wait for LSP to be ready with whatever files are loaded
+-        setAIReviewStep('lsp-ready');
+-      //         console.log('[ReviewPage] Waiting for LSP server with loaded files (10 seconds)...');
+-        await new Promise(resolve => setTimeout(resolve, 10000));
+-
+-        // Continue anyway - PR files are already loaded
+-        setAIReviewStep('preparing');
+-      }
+-    };
+-
+-    // Only start indexing after PR files are loaded
+-    if (prData?.files && worktreePath) {
+-      // Small delay to let PR files load first
+-      const timer = setTimeout(() => {
+-        loadFullProject();
+-      }, 1000);
+-
+-      return () => clearTimeout(timer);
+-    }
++    // LSP indexing disabled - now using Tree-sitter for code analysis
++    // No need to load full project or wait for LSP server
++    console.log('[ReviewPage] LSP indexing disabled, using Tree-sitter instead');
+   }, [prData, prInfo, worktreePath, repoRoot, baseBranch]);
+ 

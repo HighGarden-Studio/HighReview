@@ -5,10 +5,26 @@ import { existsSync, mkdirSync } from 'fs';
 export class ConfigService {
   private baseDir: string;
   private reposDir: string;
+  private worktreesDir: string;
 
   constructor() {
-    this.baseDir = join(homedir(), '.highreview');
+    // Environment variable support for custom location
+    const envBaseDir = process.env.HIGHREVIEW_BASE_DIR;
+    const useGlobalMode = process.env.HIGHREVIEW_GLOBAL_MODE === 'true';
+
+    if (envBaseDir) {
+      // Custom base directory
+      this.baseDir = envBaseDir;
+    } else if (useGlobalMode) {
+      // Global mode: ~/.highreview (legacy/multi-workspace)
+      this.baseDir = join(homedir(), '.highreview');
+    } else {
+      // Local mode (default): ./.highreview-prs (current working directory)
+      this.baseDir = join(process.cwd(), '.highreview-prs');
+    }
+
     this.reposDir = join(this.baseDir, 'repos');
+    this.worktreesDir = join(this.baseDir, 'worktrees');
 
     // Ensure directories exist
     if (!existsSync(this.baseDir)) {
@@ -16,6 +32,9 @@ export class ConfigService {
     }
     if (!existsSync(this.reposDir)) {
       mkdirSync(this.reposDir, { recursive: true });
+    }
+    if (!existsSync(this.worktreesDir)) {
+      mkdirSync(this.worktreesDir, { recursive: true });
     }
   }
 
@@ -34,17 +53,41 @@ export class ConfigService {
   }
 
   /**
-   * Get the local path for a specific repository
+   * Get the directory where worktrees are stored
    */
-  getRepoPath(owner: string, repo: string): string {
-    return join(this.reposDir, owner, repo);
+  getWorktreesDir(): string {
+    return this.worktreesDir;
   }
 
   /**
-   * Check if a repository is already cloned
+   * Get the local path for a specific repository (bare repo)
+   * Format: ~/.highreview/repos/{owner}-{repo}
+   */
+  getRepoPath(owner: string, repo: string): string {
+    return join(this.reposDir, `${owner}-${repo}`);
+  }
+
+  /**
+   * Get the worktree path for a specific PR
+   * Format: ~/.highreview/worktrees/{owner}-{repo}/pr-{number}
+   */
+  getWorktreePath(owner: string, repo: string, prNumber: number): string {
+    const repoWorktreeDir = join(this.worktreesDir, `${owner}-${repo}`);
+
+    // Ensure repo worktree directory exists
+    if (!existsSync(repoWorktreeDir)) {
+      mkdirSync(repoWorktreeDir, { recursive: true });
+    }
+
+    return join(repoWorktreeDir, `pr-${prNumber}`);
+  }
+
+  /**
+   * Check if a repository is already cloned (as bare repo)
    */
   isRepoCloned(owner: string, repo: string): boolean {
     const repoPath = this.getRepoPath(owner, repo);
-    return existsSync(join(repoPath, '.git'));
+    // For bare repos, check for 'config' file instead of .git directory
+    return existsSync(join(repoPath, 'config')) || existsSync(join(repoPath, '.git'));
   }
 }

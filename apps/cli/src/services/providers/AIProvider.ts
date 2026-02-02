@@ -16,6 +16,9 @@ export interface AIProviderConfig {
 
   /** Get installation instructions if not available */
   getInstallationInstructions: () => string;
+
+  /** Get list of available models */
+  getModels?: () => Promise<string[]>;
 }
 
 export interface AIReviewRequest {
@@ -30,6 +33,17 @@ export interface AIReviewRequest {
 
   /** Timeout in milliseconds */
   timeout?: number;
+
+  /** Response language (e.g., 'en', 'ko', 'ja', 'zh') */
+  language?: string;
+
+  /** Enhanced review options */
+  options?: {
+    analyzeChangeIntent?: boolean;
+    generateCallStack?: boolean;
+    analyzeBroaderImpact?: boolean;
+    semanticDiffAnalysis?: boolean;
+  };
 }
 
 export interface AIReviewResponse {

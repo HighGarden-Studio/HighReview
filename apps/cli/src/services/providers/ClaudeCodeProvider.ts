@@ -33,6 +33,63 @@ export class ClaudeCodeProvider implements AIProvider {
   }
 
   /**
+   * Perform AI code review with streaming output
+   */
+  async reviewStream(request: AIReviewRequest & { onChunk: (chunk: string) => void }): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      console.log('[ClaudeCodeProvider] Starting streaming review...');
+      console.log(`[ClaudeCodeProvider] Prompt size: ${request.prompt.length} characters`);
+      console.log(`[ClaudeCodeProvider] Working directory: ${request.workingDirectory}`);
+
+      // Build command arguments (no JSON schema for streaming)
+      const args = [
+        'code',
+        '--print',                      // Non-interactive mode
+      ];
+
+      // Add model if specified
+      if (request.model) {
+        args.push('--model', request.model);
+      }
+
+      console.log('[ClaudeCodeProvider] Using plain text streaming output');
+
+      // Call Claude Code CLI with streaming
+      const childProcess = execa('claude', args, {
+        cwd: request.workingDirectory,
+        input: request.prompt,
+        timeout: request.timeout || 300000,
+      });
+
+      // Stream stdout in real-time
+      if (childProcess.stdout) {
+        childProcess.stdout.on('data', (data: Buffer) => {
+          const chunk = data.toString();
+          request.onChunk(chunk);
+        });
+      }
+
+      // Wait for completion
+      await childProcess;
+
+      const duration = Date.now() - startTime;
+      console.log('[ClaudeCodeProvider] Streaming completed:', { duration: `${duration}ms` });
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      console.error('[ClaudeCodeProvider] Streaming failed:', error);
+      console.error('[ClaudeCodeProvider] Error details:', {
+        message: error.message,
+        stderr: error.stderr,
+        exitCode: error.exitCode,
+        duration: `${duration}ms`,
+      });
+      throw new Error(`Claude Code CLI streaming failed: ${error.message}`);
+    }
+  }
+
+  /**
    * Perform AI code review using Claude Code CLI
    */
   async review(request: AIReviewRequest): Promise<AIReviewResponse> {
@@ -43,140 +100,150 @@ export class ClaudeCodeProvider implements AIProvider {
       console.log(`[ClaudeCodeProvider] Prompt size: ${request.prompt.length} characters`);
       console.log(`[ClaudeCodeProvider] Working directory: ${request.workingDirectory}`);
 
-      // JSON Schema for structured output
-      const jsonSchema = {
-        type: 'object',
-        properties: {
-          summary: { type: 'string', description: 'Brief overview of the review' },
-          criticalIssues: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                file: { type: 'string' },
-                line: { type: 'number' },
-                severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
-                category: { type: 'string' },
-                message: { type: 'string' },
-                suggestion: { type: 'string' },
-              },
-              required: ['file', 'line', 'severity', 'category', 'message'],
-            },
-          },
-          warnings: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                file: { type: 'string' },
-                line: { type: 'number' },
-                severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
-                category: { type: 'string' },
-                message: { type: 'string' },
-                suggestion: { type: 'string' },
-              },
-              required: ['file', 'line', 'severity', 'category', 'message'],
-            },
-          },
-          suggestions: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                file: { type: 'string' },
-                line: { type: 'number' },
-                severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
-                category: { type: 'string' },
-                message: { type: 'string' },
-                suggestion: { type: 'string' },
-              },
-              required: ['file', 'line', 'severity', 'category', 'message'],
-            },
-          },
-          changeIntents: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                file: { type: 'string' },
-                level: { type: 'string', enum: ['file', 'block'] },
-                intent: { type: 'string' },
-                motivation: { type: 'string' },
-                impact: { type: 'string' },
-              },
-              required: ['file', 'level', 'intent', 'motivation'],
-            },
-          },
-          callStacks: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                function: { type: 'string' },
-                file: { type: 'string' },
-                flowchart: { type: 'string' },
-                sequence: { type: 'string' },
-              },
-              required: ['function', 'file'],
-            },
-          },
-          impactAnalysis: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string' },
-              affectedAreas: { type: 'array', items: { type: 'string' } },
-              breakingChanges: { type: 'array', items: { type: 'string' } },
-              sideEffects: { type: 'array', items: { type: 'string' } },
-            },
-          },
-          movedCode: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                from: { type: 'string' },
-                to: { type: 'string' },
-                lines: { type: 'number' },
-              },
-              required: ['from', 'to', 'lines'],
-            },
-          },
-          refactorings: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                type: { type: 'string' },
-                description: { type: 'string' },
-                files: { type: 'array', items: { type: 'string' } },
-              },
-              required: ['type', 'description', 'files'],
-            },
-          },
-        },
-        required: ['summary', 'criticalIssues', 'warnings', 'suggestions'],
-      };
-
       // Build command arguments
       const args = [
         'code',
         '--print',                      // Non-interactive mode
-        '--output-format', 'json',      // JSON output for structured parsing
-        '--json-schema', JSON.stringify(jsonSchema), // Enforce schema validation
       ];
+
+      // Detect if this is a code review request (check for specific keywords in prompt)
+      const isCodeReview = request.prompt.includes('## Pull Request Context') ||
+                           request.prompt.includes('code review') ||
+                           request.prompt.includes('analyze the following PR');
+
+      // Only use structured output for code review requests
+      if (isCodeReview) {
+        // JSON Schema for structured output
+        const jsonSchema = {
+          type: 'object',
+          properties: {
+            summary: { type: 'string', description: 'Brief overview of the review' },
+            criticalIssues: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  file: { type: 'string' },
+                  line: { type: 'number' },
+                  severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
+                  category: { type: 'string' },
+                  message: { type: 'string' },
+                  suggestion: { type: 'string' },
+                },
+                required: ['file', 'line', 'severity', 'category', 'message'],
+              },
+            },
+            warnings: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  file: { type: 'string' },
+                  line: { type: 'number' },
+                  severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
+                  category: { type: 'string' },
+                  message: { type: 'string' },
+                  suggestion: { type: 'string' },
+                },
+                required: ['file', 'line', 'severity', 'category', 'message'],
+              },
+            },
+            suggestions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  file: { type: 'string' },
+                  line: { type: 'number' },
+                  severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
+                  category: { type: 'string' },
+                  message: { type: 'string' },
+                  suggestion: { type: 'string' },
+                },
+                required: ['file', 'line', 'severity', 'category', 'message'],
+              },
+            },
+            changeIntents: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  file: { type: 'string' },
+                  level: { type: 'string', enum: ['file', 'block'] },
+                  intent: { type: 'string' },
+                  motivation: { type: 'string' },
+                  impact: { type: 'string' },
+                },
+                required: ['file', 'level', 'intent', 'motivation'],
+              },
+            },
+            callStacks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  function: { type: 'string' },
+                  file: { type: 'string' },
+                  flowchart: { type: 'string' },
+                  sequence: { type: 'string' },
+                },
+                required: ['function', 'file'],
+              },
+            },
+            impactAnalysis: {
+              type: 'object',
+              properties: {
+                scope: { type: 'string' },
+                affectedAreas: { type: 'array', items: { type: 'string' } },
+                breakingChanges: { type: 'array', items: { type: 'string' } },
+                sideEffects: { type: 'array', items: { type: 'string' } },
+              },
+            },
+            movedCode: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  from: { type: 'string' },
+                  to: { type: 'string' },
+                  lines: { type: 'number' },
+                },
+                required: ['from', 'to', 'lines'],
+              },
+            },
+            refactorings: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  type: { type: 'string' },
+                  description: { type: 'string' },
+                  files: { type: 'array', items: { type: 'string' } },
+                },
+                required: ['type', 'description', 'files'],
+              },
+            },
+          },
+          required: ['summary', 'criticalIssues', 'warnings', 'suggestions'],
+        };
+
+        args.push('--output-format', 'json');      // JSON output for structured parsing
+        args.push('--json-schema', JSON.stringify(jsonSchema)); // Enforce schema validation
+        console.log('[ClaudeCodeProvider] Using JSON output format with schema validation');
+      } else {
+        console.log('[ClaudeCodeProvider] Using plain text output for conversational mode');
+      }
 
       // Add model if specified
       if (request.model) {
         args.push('--model', request.model);
       }
 
-      console.log('[ClaudeCodeProvider] Using JSON output format with schema validation');
-
       // Call Claude Code CLI
       const { stdout, stderr } = await execa('claude', args, {
         cwd: request.workingDirectory,
         input: request.prompt,         // Pass prompt via stdin
-        timeout: request.timeout || 300000, // Default 5 minutes
+        timeout: request.timeout || 1200000, // Default 20 minutes (large PRs can take time)
       });
 
       const duration = Date.now() - startTime;
@@ -212,7 +279,17 @@ export class ClaudeCodeProvider implements AIProvider {
         exitCode: error.exitCode,
         command: error.command,
         duration: `${duration}ms`,
+        timedOut: error.timedOut,
       });
+
+      // Check if it's a timeout error
+      if (error.timedOut || error.message?.includes('timed out')) {
+        const timeoutMinutes = Math.floor((request.timeout || 1200000) / 60000);
+        throw new Error(
+          `AI review timed out after ${timeoutMinutes} minutes. This PR may be too large. ` +
+          `Try reducing the AI review options or reviewing a smaller set of changes.`
+        );
+      }
 
       throw new Error(`Claude Code CLI failed: ${error.message}`);
     }

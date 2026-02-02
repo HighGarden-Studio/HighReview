@@ -32,6 +32,7 @@ yarn-error.log*
 
 # HighReview specific
 .highreview/
+.highreview-prs/
 apps/cli/public/
 
 # Testing

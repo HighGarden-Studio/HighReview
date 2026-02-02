@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css';
 import {
@@ -41,9 +42,10 @@ interface ChatPanelProps {
     description?: string;
   };
   aiReviewData?: any; // AI Review results
+  changedFiles?: string[]; // List of changed file paths
 }
 
-export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, onClose, prContext, aiReviewData }: ChatPanelProps) {
+export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, onClose, prContext, aiReviewData, changedFiles }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [detectedReferences, setDetectedReferences] = useState<string[]>([]);
@@ -62,14 +64,25 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
   const getMentionSuggestions = (): MentionSuggestion[] => {
     const suggestions: MentionSuggestion[] = [];
 
-    // File suggestions (limit to 10 most recent)
-    // Note: In real implementation, fetch from file tree or worktree
-    suggestions.push({
-      type: 'file',
-      id: 'example',
-      label: 'Use @file:path:line format',
-      description: 'Example: @src/components/ChatPanel.tsx:50',
-    });
+    // Add changed files as suggestions (limit to 20 most relevant)
+    if (changedFiles && changedFiles.length > 0) {
+      changedFiles.slice(0, 20).forEach((filePath) => {
+        suggestions.push({
+          type: 'file',
+          id: filePath,
+          label: filePath,
+          description: 'Use @filepath or @filepath:line format',
+        });
+      });
+    } else {
+      // Show format example if no files available
+      suggestions.push({
+        type: 'file',
+        id: 'example',
+        label: 'Format: @filepath:line',
+        description: 'Example: @src/components/ChatPanel.tsx:50',
+      });
+    }
 
     if (aiReviewData) {
       // Issue suggestions
@@ -164,10 +177,10 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
         // Calculate position for autocomplete dropdown
         if (textareaRef.current) {
           const textarea = textareaRef.current;
-          const { top, left, height } = textarea.getBoundingClientRect();
-          // Position below cursor (approximate)
+          const { top, left } = textarea.getBoundingClientRect();
+          // Position above textarea (subtract approximate height of dropdown)
           setMentionPosition({
-            top: top + height + 5,
+            top: top - 270, // ~264px max height + 6px padding
             left: left + 10,
           });
         }
@@ -189,7 +202,12 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
     let insertText = '';
     switch (suggestion.type) {
       case 'file':
-        insertText = '@file:path:line'; // User will replace with actual file
+        // If it's an example, show format. Otherwise use actual file path
+        if (suggestion.id === 'example') {
+          insertText = '@filepath:line';
+        } else {
+          insertText = `@${suggestion.id}`;
+        }
         break;
       case 'issue':
         insertText = `@issue:${suggestion.id}`;
@@ -302,52 +320,20 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
         };
       }
 
-      // Add AI Review data as documentation if available
-      if (aiReviewData) {
-        context.documentation = [];
+      // Add minimal AI Review summary if available (avoid overwhelming context)
+      if (aiReviewData?.summary) {
+        context.documentation = [{
+          title: 'AI Review Summary',
+          content: aiReviewData.summary,
+        }];
+      }
 
-        // Add summary
-        if (aiReviewData.summary) {
-          context.documentation.push({
-            title: 'AI Review Summary',
-            content: aiReviewData.summary,
-          });
-        }
-
-        // Add critical issues
-        if (aiReviewData.issues?.filter((i: any) => i.severity === 'critical').length > 0) {
-          const criticalIssues = aiReviewData.issues
-            .filter((i: any) => i.severity === 'critical')
-            .map((i: any) => `- ${i.file}:${i.line} - ${i.message}`)
-            .join('\n');
-          context.documentation.push({
-            title: 'Critical Issues Found',
-            content: criticalIssues,
-          });
-        }
-
-        // Add warnings
-        if (aiReviewData.issues?.filter((i: any) => i.severity === 'warning').length > 0) {
-          const warnings = aiReviewData.issues
-            .filter((i: any) => i.severity === 'warning')
-            .map((i: any) => `- ${i.file}:${i.line} - ${i.message}`)
-            .join('\n');
-          context.documentation.push({
-            title: 'Warnings Found',
-            content: warnings,
-          });
-        }
-
-        // Add change intents
-        if (aiReviewData.changeIntents?.length > 0) {
-          const intents = aiReviewData.changeIntents
-            .map((ci: any) => `- ${ci.file}: ${ci.intent}\n  Motivation: ${ci.motivation}`)
-            .join('\n');
-          context.documentation.push({
-            title: 'Change Intents',
-            content: intents,
-          });
-        }
+      // Add workspace path info for agent to access project files
+      if (worktreePath) {
+        context.workspace = {
+          path: worktreePath,
+          description: 'PR worktree path - use file operations to read/analyze any file in this directory',
+        };
       }
 
       // Build history for API (last 10 messages, using clean versions)
@@ -476,8 +462,9 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
               <div className="text-xs text-light-text-muted dark:text-dark-text-muted space-y-1">
                 <p className="font-semibold mb-2">Examples:</p>
                 <p>• "Explain this function"</p>
+                <p>• "What changed in <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@src/App.tsx</span>?"</p>
+                <p>• "Explain <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@src/utils/helper.ts:50</span>"</p>
                 <p>• "What does <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@issue:0</span> mean?"</p>
-                <p>• "Tell me about <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@change:1</span>"</p>
                 <p>• "Show me <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@callstack:0</span>"</p>
                 <p className="mt-2 pt-2 border-t border-light-border dark:border-dark-border">
                   Type <span className="font-mono text-light-accent-primary dark:text-dark-accent-primary">@</span> to see all available references
@@ -527,8 +514,22 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
                               prose-pre:bg-light-surface-elevated dark:prose-pre:bg-dark-surface-elevated
                               prose-code:text-light-accent-primary dark:prose-code:text-dark-accent-primary">
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
+                    remarkPlugins={[remarkGfm, remarkBreaks]}
                     rehypePlugins={[rehypeHighlight]}
+                    components={{
+                      pre: ({ children }) => <div className="my-4 not-prose">{children}</div>,
+                      p: ({node, children, ...props}) => {
+                        const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
+                          return child?.props?.className?.includes('language-');
+                        });
+                        const Element = hasCodeBlock ? 'div' : 'p';
+                        return (
+                          <Element className="mb-2 last:mb-0" {...props}>
+                            {children}
+                          </Element>
+                        );
+                      },
+                    }}
                   >
                     {message.content}
                   </ReactMarkdown>
@@ -548,8 +549,22 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
                             prose-pre:bg-light-surface-elevated dark:prose-pre:bg-dark-surface-elevated
                             prose-code:text-light-accent-primary dark:prose-code:text-dark-accent-primary">
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
+                  remarkPlugins={[remarkGfm, remarkBreaks]}
                   rehypePlugins={[rehypeHighlight]}
+                  components={{
+                    pre: ({ children }) => <div className="my-4 not-prose">{children}</div>,
+                    p: ({node, children, ...props}) => {
+                      const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
+                        return child?.props?.className?.includes('language-');
+                      });
+                      const Element = hasCodeBlock ? 'div' : 'p';
+                      return (
+                        <Element className="mb-2 last:mb-0" {...props}>
+                          {children}
+                        </Element>
+                      );
+                    },
+                  }}
                 >
                   {streamingMessage}
                 </ReactMarkdown>
@@ -629,7 +644,7 @@ export function ChatPanel({ sessionId, worktreePath, codeContext, commitHash, on
             placeholder="Ask about the code... (type @ to reference files, issues, changes, etc.)"
             disabled={sendMessage.isPending}
             rows={3}
-            className="flex-1 px-4 py-2 rounded-lg resize-none
+            className="flex-1 px-4 py-2 rounded-lg resize-none text-sm
                      bg-light-surface-elevated dark:bg-dark-surface-elevated
                      border border-light-border dark:border-dark-border
                      text-light-text-primary dark:text-dark-text-primary

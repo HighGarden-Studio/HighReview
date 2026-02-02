@@ -164,23 +164,81 @@ export function detectFunctionLines(
 }
 
 /**
+ * Get severity priority for sorting (higher number = higher priority)
+ */
+function getSeverityPriority(severity: 'critical' | 'warning' | 'suggestion'): number {
+  switch (severity) {
+    case 'critical':
+      return 3;
+    case 'warning':
+      return 2;
+    case 'suggestion':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Get severity badge for hover tooltips (without emojis)
+ */
+function getSeverityBadge(severity: 'critical' | 'warning' | 'suggestion'): string {
+  switch (severity) {
+    case 'critical':
+      return '`CRITICAL`';
+    case 'warning':
+      return '`WARNING`';
+    case 'suggestion':
+      return '`SUGGESTION`';
+    default:
+      return '`UNKNOWN`';
+  }
+}
+
+/**
  * Create Monaco editor decorations for AI review items
+ * When multiple issues exist on the same line, show the highest priority icon
+ * but include all issues in the hover message
  */
 export function createAIReviewDecorations(
   decorations: AIReviewDecoration[]
 ): monaco.editor.IModelDeltaDecoration[] {
   console.log('[createAIReviewDecorations] Creating decorations for', decorations.length, 'items');
 
-  return decorations.map((decoration, index) => {
-    let glyphClassName: string;
-    let hoverMessage: string;
+  // Group decorations by line number
+  const decorationsByLine = new Map<number, AIReviewDecoration[]>();
 
-    if (decoration.type === 'issue') {
-      const issue = decoration.data as AIReviewComment;
-      console.log(`[createAIReviewDecorations] Issue ${index}: severity=${decoration.severity}, line=${decoration.line}`);
+  for (const decoration of decorations) {
+    const existing = decorationsByLine.get(decoration.line) || [];
+    existing.push(decoration);
+    decorationsByLine.set(decoration.line, existing);
+  }
 
-      // Set glyph class based on severity
-      switch (decoration.severity) {
+  const result: monaco.editor.IModelDeltaDecoration[] = [];
+
+  // Process each line
+  for (const [lineNumber, lineDecorations] of decorationsByLine.entries()) {
+    // Separate issues from call stacks
+    const issues = lineDecorations.filter(d => d.type === 'issue');
+    const callStacks = lineDecorations.filter(d => d.type === 'callstack');
+
+    // Handle issues - prioritize by severity
+    if (issues.length > 0) {
+      // Sort by severity priority (highest first)
+      const sortedIssues = issues.sort((a, b) => {
+        const priorityA = getSeverityPriority(a.severity!);
+        const priorityB = getSeverityPriority(b.severity!);
+        return priorityB - priorityA;
+      });
+
+      const highestPriorityIssue = sortedIssues[0];
+      const issue = highestPriorityIssue.data as AIReviewComment;
+
+      console.log(`[createAIReviewDecorations] Line ${lineNumber}: ${sortedIssues.length} issue(s), showing ${highestPriorityIssue.severity}`);
+
+      // Set glyph class based on highest priority severity
+      let glyphClassName: string;
+      switch (highestPriorityIssue.severity) {
         case 'critical':
           glyphClassName = 'ai-review-critical-glyph';
           break;
@@ -191,28 +249,54 @@ export function createAIReviewDecorations(
           glyphClassName = 'ai-review-suggestion-glyph';
           break;
         default:
-          console.warn('[createAIReviewDecorations] Unknown severity:', decoration.severity, '- defaulting to suggestion');
+          console.warn('[createAIReviewDecorations] Unknown severity:', highestPriorityIssue.severity, '- defaulting to suggestion');
           glyphClassName = 'ai-review-suggestion-glyph';
       }
-      hoverMessage = `${issue.severity.toUpperCase()}: ${issue.message}`;
-    } else {
-      // Call stack decoration
-      const callStack = decoration.data as CallStackInfo;
-      console.log(`[createAIReviewDecorations] CallStack ${index}: function=${callStack.function}, line=${decoration.line}`);
-      glyphClassName = 'ai-review-callstack-glyph';
-      hoverMessage = `Call Stack: ${callStack.function}`;
+
+      // Combine all issue messages for hover
+      // Use badge-style severity display with data attributes for CSS styling
+      let hoverMessage: string;
+      if (sortedIssues.length === 1) {
+        const severityBadge = getSeverityBadge(issue.severity);
+        const categoryBadge = issue.category ? ` \`${issue.category}\`` : '';
+        hoverMessage = `${severityBadge}${categoryBadge}\n\n${issue.message}`;
+      } else {
+        // Multiple issues - show all with severity badges
+        const messages = sortedIssues.map((issueDecor, idx) => {
+          const issueData = issueDecor.data as AIReviewComment;
+          const severityBadge = getSeverityBadge(issueData.severity);
+          const categoryBadge = issueData.category ? ` \`${issueData.category}\`` : '';
+          return `${idx + 1}. ${severityBadge}${categoryBadge}\n   ${issueData.message}`;
+        });
+        hoverMessage = `**${sortedIssues.length} issues found:**\n\n${messages.join('\n\n')}`;
+      }
+
+      result.push({
+        range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+        options: {
+          glyphMarginClassName: glyphClassName,
+          glyphMarginHoverMessage: { value: hoverMessage },
+        },
+      });
     }
 
-    console.log(`[createAIReviewDecorations] Decoration ${index}: className=${glyphClassName}, line=${decoration.line}`);
+    // Handle call stacks separately (can coexist with issues)
+    for (const callStackDecoration of callStacks) {
+      const callStack = callStackDecoration.data as CallStackInfo;
+      console.log(`[createAIReviewDecorations] CallStack at line ${lineNumber}: function=${callStack.function}`);
 
-    return {
-      range: new monaco.Range(decoration.line, 1, decoration.line, 1),
-      options: {
-        glyphMarginClassName: glyphClassName,
-        glyphMarginHoverMessage: { value: hoverMessage },
-      },
-    };
-  });
+      result.push({
+        range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+        options: {
+          glyphMarginClassName: 'ai-review-callstack-glyph',
+          glyphMarginHoverMessage: { value: `Call Stack: ${callStack.function}` },
+        },
+      });
+    }
+  }
+
+  console.log(`[createAIReviewDecorations] Created ${result.length} Monaco decorations from ${decorations.length} items`);
+  return result;
 }
 
 /**
@@ -362,15 +446,76 @@ export function getAIReviewStyles(): string {
     .monaco-editor .margin-view-overlays .line-numbers:hover .add-comment-button {
       opacity: 0.7;
     }
+
+    /* Customize AI Review hover tooltip */
+    .monaco-hover .hover-contents {
+      font-size: 14px !important;
+      line-height: 1.6 !important;
+    }
+    .monaco-hover .hover-row {
+      padding: 6px 10px !important;
+    }
+    /* Badge-style code blocks (for CRITICAL, WARNING, SUGGESTION, categories) */
+    .monaco-hover code {
+      font-size: 11px !important;
+      font-weight: 600 !important;
+      padding: 2px 8px !important;
+      border-radius: 4px !important;
+      border: 1px solid rgba(128, 128, 128, 0.3) !important;
+      background-color: rgba(128, 128, 128, 0.1) !important;
+      margin: 0 2px !important;
+    }
+    /* Light theme severity colors */
+    .monaco-hover[data-color-mode="light"] code,
+    .monaco-hover:not([data-color-mode="dark"]) code {
+      color: rgb(31, 41, 55) !important;
+    }
+    /* Dark theme severity colors */
+    .monaco-hover[data-color-mode="dark"] code {
+      color: rgb(229, 231, 235) !important;
+    }
   `;
 }
 
 /**
- * Find the decoration at a specific line
+ * Find all decorations at a specific line
+ */
+export function findDecorationsAtLine(
+  decorations: AIReviewDecoration[],
+  lineNumber: number
+): AIReviewDecoration[] {
+  return decorations.filter((d) => d.line === lineNumber);
+}
+
+/**
+ * Find the decoration at a specific line (returns the highest priority issue if multiple exist)
  */
 export function findDecorationAtLine(
   decorations: AIReviewDecoration[],
   lineNumber: number
 ): AIReviewDecoration | undefined {
-  return decorations.find((d) => d.line === lineNumber);
+  const lineDecorations = findDecorationsAtLine(decorations, lineNumber);
+
+  if (lineDecorations.length === 0) {
+    return undefined;
+  }
+
+  if (lineDecorations.length === 1) {
+    return lineDecorations[0];
+  }
+
+  // Multiple decorations - return the highest priority issue
+  const issues = lineDecorations.filter(d => d.type === 'issue');
+  if (issues.length > 0) {
+    // Sort by severity priority and return highest
+    const sorted = issues.sort((a, b) => {
+      const priorityA = getSeverityPriority(a.severity!);
+      const priorityB = getSeverityPriority(b.severity!);
+      return priorityB - priorityA;
+    });
+    return sorted[0];
+  }
+
+  // No issues, return first call stack or other decoration
+  return lineDecorations[0];
 }

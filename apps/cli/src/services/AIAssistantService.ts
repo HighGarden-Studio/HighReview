@@ -64,6 +64,20 @@ export interface AssistantRequest {
   model?: string;
 }
 
+export interface StreamChunk {
+  type: 'status' | 'thinking' | 'content' | 'tool' | 'error' | 'done';
+  status?: string;
+  content?: string;
+  toolName?: string;
+  toolInput?: any;
+  error?: string;
+}
+
+export interface AssistantStreamRequest extends AssistantRequest {
+  /** Callback for each chunk */
+  onChunk: (chunk: StreamChunk) => void;
+}
+
 export interface AssistantResponse {
   /** AI's response */
   message: string;
@@ -110,6 +124,64 @@ export class AIAssistantService {
   }
 
   /**
+   * Ask AI assistant a question with streaming
+   */
+  async askStream(request: AssistantStreamRequest): Promise<void> {
+    await this.initializeProvider();
+
+    if (!this.provider) {
+      throw new Error('AI provider not initialized');
+    }
+
+    const startTime = Date.now();
+
+    try {
+      // Send initial status
+      request.onChunk({ type: 'status', status: 'Building prompt...' });
+
+      // Build comprehensive prompt
+      const prompt = this.buildPrompt(request);
+
+      request.onChunk({ type: 'status', status: 'Thinking...' });
+
+      console.log('[AI Assistant] Processing streaming request:', {
+        messageLength: request.message.length,
+        hasHistory: !!request.history?.length,
+        hasContext: !!request.context,
+        promptSize: prompt.length,
+      });
+
+      // Get configured model if not provided in request
+      let model = request.model;
+      if (!model) {
+        const configService = getAIConfigService();
+        const settings = await configService.getProviderSettings();
+        if (settings?.model) {
+          model = settings.model;
+        }
+      }
+
+      // Call AI provider with streaming
+      await (this.provider as any).reviewStream?.({
+        prompt,
+        workingDirectory: request.workingDirectory,
+        model,
+        timeout: 120000,
+        onChunk: (chunk: string) => {
+          request.onChunk({ type: 'content', content: chunk });
+        },
+      });
+
+      const duration = Date.now() - startTime;
+      console.log('[AI Assistant] Streaming completed:', { duration: `${duration}ms` });
+    } catch (error: any) {
+      console.error('[AI Assistant] Streaming failed:', error);
+      request.onChunk({ type: 'error', error: error.message });
+      throw error;
+    }
+  }
+
+  /**
    * Ask AI assistant a question
    */
   async ask(request: AssistantRequest): Promise<AssistantResponse> {
@@ -131,11 +203,21 @@ export class AIAssistantService {
       promptSize: prompt.length,
     });
 
+    // Get configured model if not provided in request
+    let model = request.model;
+    if (!model) {
+      const configService = getAIConfigService();
+      const settings = await configService.getProviderSettings();
+      if (settings?.model) {
+        model = settings.model;
+      }
+    }
+
     // Call AI provider
     const response = await this.provider.review({
       prompt,
       workingDirectory: request.workingDirectory,
-      model: request.model,
+      model,
       timeout: 120000, // 2 minutes for interactive chat
     });
 
@@ -209,57 +291,61 @@ export class AIAssistantService {
     let prompt = '';
 
     // System message
-    prompt += `You are an expert code assistant helping with code review, debugging, and development tasks.
+    prompt += `You are a friendly and helpful AI assistant for software development.
 
-Your capabilities:
-- Answer questions about code
-- Explain code functionality
-- Suggest improvements and fixes
-- Help with debugging
-- Provide code examples
-- Review code quality
+Your role:
+- Answer user questions naturally and conversationally
+- Provide code help when asked
+- Explain concepts clearly
+- Be concise and relevant to the user's question
 
-RESPONSE FORMAT GUIDELINES:
-- Use clear section headers (## Header) to organize your response
-- Use bullet points and numbered lists for clarity
-- Format code using markdown code blocks with language tags
-- Use **bold** for important points
-- Use > blockquotes for tips or warnings
-- Break down complex explanations into digestible sections:
-  1. **Summary**: Brief overview (2-3 sentences)
-  2. **Details**: In-depth explanation
-  3. **Examples**: Code examples if applicable
-  4. **Suggestions**: Recommendations if applicable
+IMPORTANT GUIDELINES:
+- Focus on answering the user's CURRENT QUESTION
+- Don't perform unsolicited code reviews unless explicitly asked
+- If context is provided (PR info, code snippets), use it only if relevant to the question
+- For greetings and casual questions, respond naturally without technical analysis
+- Only provide detailed code analysis when the user specifically requests it
 
-Be concise, accurate, and helpful. Structure your responses for easy reading.\n\n`;
+RESPONSE FORMAT:
+- Use markdown for formatting (headers, code blocks, lists)
+- Keep responses concise and to the point
+- Use code examples only when helpful
+- Structure longer responses with clear sections
+
+Be helpful, friendly, and context-aware.\n\n`;
+
+    // User's current question (prioritize this)
+    prompt += `## User's Question:\n\n${request.message}\n\n`;
 
     // Add conversation history
     if (request.history && request.history.length > 0) {
-      prompt += `## Conversation History:\n\n`;
+      prompt += `## Previous Conversation:\n\n`;
       for (const msg of request.history.slice(-10)) { // Last 10 messages
         const role = msg.role === 'user' ? 'User' : 'Assistant';
         prompt += `**${role}:** ${msg.content}\n\n`;
       }
     }
 
-    // Add context
+    // Add context (only if relevant)
     if (request.context) {
       const ctx = request.context;
 
+      prompt += `## Additional Context (use only if relevant to the question):\n\n`;
+
       // PR context
       if (ctx.prContext) {
-        prompt += `## Pull Request Context:\n\n`;
-        prompt += `Repository: ${ctx.prContext.owner}/${ctx.prContext.repo}\n`;
-        prompt += `PR #${ctx.prContext.prNumber}: ${ctx.prContext.title}\n`;
+        prompt += `**Pull Request:**\n`;
+        prompt += `- Repository: ${ctx.prContext.owner}/${ctx.prContext.repo}\n`;
+        prompt += `- PR #${ctx.prContext.prNumber}: ${ctx.prContext.title}\n`;
         if (ctx.prContext.description) {
-          prompt += `Description: ${ctx.prContext.description}\n`;
+          prompt += `- Description: ${ctx.prContext.description}\n`;
         }
         prompt += `\n`;
       }
 
       // Selected code
       if (ctx.code) {
-        prompt += `## Selected Code:\n\n`;
+        prompt += `**Selected Code:**\n`;
         if (ctx.code.filePath) {
           prompt += `File: \`${ctx.code.filePath}\``;
           if (ctx.code.startLine && ctx.code.endLine) {
@@ -272,26 +358,23 @@ Be concise, accurate, and helpful. Structure your responses for easy reading.\n\
 
       // Attached files
       if (ctx.files && ctx.files.length > 0) {
-        prompt += `## Attached Files:\n\n`;
+        prompt += `**Attached Files:**\n\n`;
         for (const file of ctx.files.slice(0, 5)) { // Max 5 files
-          prompt += `### ${file.path}\n\`\`\`\n${file.content.slice(0, 10000)}\n\`\`\`\n\n`;
+          prompt += `\`${file.path}\`:\n\`\`\`\n${file.content.slice(0, 10000)}\n\`\`\`\n\n`;
         }
       }
 
       // Documentation
       if (ctx.documentation && ctx.documentation.length > 0) {
-        prompt += `## Documentation:\n\n`;
+        prompt += `**Documentation:**\n\n`;
         for (const doc of ctx.documentation) {
-          prompt += `### ${doc.title}\n${doc.content}\n\n`;
+          prompt += `${doc.title}:\n${doc.content}\n\n`;
         }
       }
     }
 
-    // User's current question
-    prompt += `## Current Question:\n\n${request.message}\n\n`;
-
-    // Instructions
-    prompt += `Please provide a helpful, accurate response. Use code examples when appropriate.`;
+    // Final instructions
+    prompt += `---\n\nRemember: Answer the user's question directly and naturally. The context above is provided for reference but should only be used if relevant to their specific question.`;
 
     return prompt;
   }

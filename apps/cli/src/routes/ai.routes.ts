@@ -29,6 +29,7 @@ export async function aiRoutes(fastify: FastifyInstance) {
             name: provider.name,
             available: await provider.isAvailable(),
             instructions: provider.getInstallationInstructions(),
+            models: provider.getModels ? await provider.getModels() : [],
           };
         }
       }
@@ -36,10 +37,12 @@ export async function aiRoutes(fastify: FastifyInstance) {
       // Get currently selected provider
       const configService = getAIConfigService();
       const selectedProvider = await configService.getSelectedProvider().catch(() => null);
+      const config = await configService.getConfig();
 
       return reply.send({
         providers,
         selected: selectedProvider,
+        selectedModel: config.providerSettings?.[selectedProvider || '']?.model,
       });
     } catch (error: any) {
       console.error('[AI Routes] Failed to get providers:', error);
@@ -77,10 +80,11 @@ export async function aiRoutes(fastify: FastifyInstance) {
     Body: {
       provider: string;
       providerSettings?: Record<string, any>;
+      model?: string;
     };
   }>('/api/ai/config', async (request, reply) => {
     try {
-      const { provider, providerSettings } = request.body;
+      const { provider, providerSettings: initialSettings, model } = request.body;
 
       if (!provider) {
         return reply.status(400).send({
@@ -107,6 +111,12 @@ export async function aiRoutes(fastify: FastifyInstance) {
 
       // Save configuration
       const configService = getAIConfigService();
+      
+      const providerSettings = initialSettings || {};
+      if (model) {
+        providerSettings.model = model;
+      }
+
       await configService.setSelectedProvider(provider, providerSettings);
 
       console.log(`[AI Routes] Updated AI provider to: ${provider}`);
@@ -180,6 +190,76 @@ export async function aiRoutes(fastify: FastifyInstance) {
         error: 'AI Assistant request failed',
         message: error.message,
       });
+    }
+  });
+
+  /**
+   * POST /api/ai/ask-stream
+   * Ask AI assistant with streaming response (Server-Sent Events)
+   */
+  fastify.post<{
+    Body: {
+      message: string;
+      history?: Array<{ role: 'user' | 'assistant'; content: string; timestamp: number }>;
+      context?: AssistantContext;
+      workingDirectory: string;
+      model?: string;
+    };
+  }>('/api/ai/ask-stream', async (request, reply) => {
+    try {
+      const { message, history, context, workingDirectory, model } = request.body;
+
+      if (!message || !message.trim()) {
+        return reply.status(400).send({
+          error: 'Message is required',
+        });
+      }
+
+      if (!workingDirectory) {
+        return reply.status(400).send({
+          error: 'Working directory is required',
+        });
+      }
+
+      console.log('[AI Routes] AI Assistant streaming request:', {
+        messageLength: message.length,
+        hasHistory: !!history?.length,
+        hasContext: !!context,
+      });
+
+      // Set headers for SSE
+      reply.raw.setHeader('Content-Type', 'text/event-stream');
+      reply.raw.setHeader('Cache-Control', 'no-cache');
+      reply.raw.setHeader('Connection', 'keep-alive');
+      reply.raw.setHeader('Access-Control-Allow-Origin', '*');
+
+      // Send initial status
+      reply.raw.write(`data: ${JSON.stringify({ type: 'status', status: 'starting' })}\n\n`);
+
+      const assistantService = new AIAssistantService();
+
+      // Stream response
+      await assistantService.askStream({
+        message,
+        history,
+        context,
+        workingDirectory,
+        model,
+        onChunk: (chunk) => {
+          reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        },
+      });
+
+      // Send done event
+      reply.raw.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      reply.raw.end();
+    } catch (error: any) {
+      console.error('[AI Routes] AI Assistant streaming failed:', error);
+      reply.raw.write(`data: ${JSON.stringify({
+        type: 'error',
+        error: error.message
+      })}\n\n`);
+      reply.raw.end();
     }
   });
 

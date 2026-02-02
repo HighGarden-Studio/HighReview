@@ -19,10 +19,7 @@ function ReviewPageWrapper() {
     aiReviewOptions?: any;
   } | null;
 
-  console.log('[ReviewPageWrapper] Location state:', state);
-
   if (!state || !state.worktreePath) {
-    console.log('[ReviewPageWrapper] No state or no worktreePath, showing error');
     return (
       <div className="min-h-screen flex items-center justify-center bg-light-bg dark:bg-dark-bg">
         <div className="text-center">
@@ -39,12 +36,6 @@ function ReviewPageWrapper() {
       </div>
     );
   }
-
-  console.log('[ReviewPageWrapper] Rendering ReviewPage with:', {
-    worktreePath: state.worktreePath,
-    baseBranch: state.baseBranch,
-    repoRoot: state.repoRoot
-  });
 
   return (
     <ReviewPage

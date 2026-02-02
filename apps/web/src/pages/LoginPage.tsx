@@ -20,9 +20,22 @@ export function LoginPage() {
   useEffect(() => {
     // Fetch setup instructions
     fetch('/api/auth/setup-instructions')
-      .then((res) => res.json())
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        const text = await res.text();
+        try {
+          return JSON.parse(text);
+        } catch (e) {
+          console.error('Failed to parse JSON:', text);
+          throw new Error('Invalid JSON response');
+        }
+      })
       .then((data) => setInstructions(data))
-      .catch(console.error);
+      .catch((error) => {
+        console.error('Failed to fetch setup instructions:', error);
+      });
   }, []);
 
   useEffect(() => {

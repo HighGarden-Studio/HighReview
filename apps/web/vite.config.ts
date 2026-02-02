@@ -9,14 +9,22 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8765',
         changeOrigin: true,
+        timeout: 900000, // 15 minutes for AI generation
+        proxyTimeout: 900000,
       },
     },
   },
   build: {
     outDir: '../cli/public',
     emptyOutDir: true,
+    commonjsOptions: {
+      include: [/mermaid/, /node_modules/],
+    },
   },
   optimizeDeps: {
     include: ['mermaid'],
+  },
+  ssr: {
+    noExternal: ['mermaid'],
   },
 });

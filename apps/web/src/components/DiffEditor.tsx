@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, memo } from 'react';
+import { createRoot, Root } from 'react-dom/client';
 import * as monaco from 'monaco-editor';
 import { CommentDecoration, CodeReference } from './CodeEditor';
 import {
@@ -12,6 +13,84 @@ import {
   findDecorationAtLine,
 } from '../utils/aiReviewDecorations';
 import { CommentForm } from './CommentForm';
+import { PRCommentThread } from './PRCommentThread';
+import { ThemeProvider } from '../contexts/ThemeContext';
+import { createVSCodeModel, createStandardModel } from '../utils/monacoModels';
+// DISABLED LSP: import { registerLSPActions } from '../utils/editorService';
+import { registerTreeSitterActions } from '../utils/editorService';
+
+// Zone Widget that renders React component inside Monaco diff editor
+class PRCommentZoneWidget implements monaco.editor.IViewZone {
+  domNode: HTMLDivElement;
+  afterLineNumber: number;
+  heightInPx: number;
+  private root: Root | null = null;
+
+  constructor(
+    afterLineNumber: number,
+    thread: any,
+    currentUser: string | undefined,
+    onReply: (threadId: string, body: string) => Promise<void>,
+    onReact: (commentId: string, reaction: string) => Promise<void>,
+    onResolve: ((threadId: string) => Promise<void>) | undefined
+  ) {
+    this.afterLineNumber = afterLineNumber;
+
+    // Calculate height - allocate space based on new bubble-style layout
+    // Header: ~50px, Each comment bubble: ~140px, Reply form: ~200px, Padding
+    const headerHeight = 50;
+    const commentHeight = 140; // Bubble style with avatar
+    const replyFormHeight = thread.isResolved ? 0 : 200; // Collapsed button or expanded editor
+    const commentsCount = thread.comments?.length || 1;
+    const extraPadding = 60;
+    this.heightInPx = headerHeight + (commentsCount * commentHeight) + replyFormHeight + extraPadding;
+
+    console.log('[DiffCommentZone] Thread height calculation:', {
+      headerHeight,
+      commentHeight,
+      commentsCount,
+      replyFormHeight,
+      extraPadding,
+      threadId: thread.id,
+      isResolved: thread.isResolved,
+    });
+
+    // Create DOM container
+    this.domNode = document.createElement('div');
+    this.domNode.style.width = '100%';
+    this.domNode.style.height = `${this.heightInPx}px`; // Fixed height instead of maxHeight
+    this.domNode.style.padding = '8px 60px 8px 72px'; // Align with line numbers (72px) and leave right margin
+    this.domNode.style.boxSizing = 'border-box';
+    this.domNode.style.backgroundColor = 'transparent'; // Transparent to not block content
+    this.domNode.style.position = 'relative';
+    this.domNode.style.zIndex = '100';
+    this.domNode.style.pointerEvents = 'auto';
+    this.domNode.style.overflow = 'visible'; // Allow content to be visible
+
+    // Create React root and render PRCommentThread component with ThemeProvider
+    this.root = createRoot(this.domNode);
+    this.root.render(
+      <ThemeProvider>
+        <PRCommentThread
+          thread={thread}
+          currentUser={currentUser}
+          onReply={onReply}
+          onReact={onReact}
+          onResolve={onResolve}
+          onClose={() => {}}
+          inline={true}
+        />
+      </ThemeProvider>
+    );
+  }
+
+  dispose() {
+    if (this.root) {
+      this.root.unmount();
+      this.root = null;
+    }
+  }
+}
 
 interface DiffEditorProps {
   original: string;
@@ -19,17 +98,44 @@ interface DiffEditorProps {
   language?: string;
   theme?: 'vs-dark' | 'vs-light';
   height?: string;
-  highlightLine?: number;
+  highlightLine?: number; // Deprecated: use highlightLines instead
+  highlightLines?: {
+    original?: number;
+    modified?: number;
+  };
+  highlightColumn?: number;
+  highlightKeyword?: string; // Keyword to highlight in the code
   comments?: CommentDecoration[];
   filePath?: string; // File path for proper URI creation
   repoRoot?: string; // Repository root for proper URI creation
+  worktreePath?: string; // Worktree path for Tree-sitter analysis
   onAddComment?: (line: number, body: string) => void;
   onShowReferences?: (references: CodeReference[], title: string) => void;
   onNavigateToLocation?: (uri: string, line: number, column: number) => void;
+  onSearchInProject?: (query: string, currentFile: string, currentLine: number) => void;
   // AI Review integration
   aiReviewIssues?: AIReviewComment[];
   aiReviewCallStacks?: CallStackInfo[];
   onAIReviewClick?: (decoration: AIReviewDecoration) => void;
+  // PR Comments integration
+  prComments?: Array<{
+    id: string;
+    file: string;
+    line: number;
+    comments: Array<{
+      id: string;
+      author: string;
+      authorAvatar?: string;
+      body: string;
+      createdAt: string;
+      reactions: any[];
+    }>;
+    isResolved: boolean;
+  }>;
+  currentUser?: string;
+  onPRCommentReply?: (threadId: string, body: string) => Promise<void>;
+  onPRCommentReact?: (commentId: string, reaction: string) => Promise<void>;
+  onPRCommentResolve?: (threadId: string) => Promise<void>;
 }
 
 function DiffEditorComponent({
@@ -39,15 +145,25 @@ function DiffEditorComponent({
   theme = 'vs-dark',
   height = '100%',
   highlightLine,
+  highlightLines,
+  highlightColumn,
+  highlightKeyword,
   comments = [],
   filePath,
   repoRoot,
+  worktreePath,
   onAddComment,
   onShowReferences,
   onNavigateToLocation,
+  onSearchInProject,
   aiReviewIssues = [],
   aiReviewCallStacks = [],
   onAIReviewClick,
+  prComments = [],
+  currentUser,
+  onPRCommentReply,
+  onPRCommentReact,
+  onPRCommentResolve,
 }: DiffEditorProps) {
   const diffEditorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -59,8 +175,11 @@ function DiffEditorComponent({
   const commentDecorationsRef = useRef<string[]>([]); // Store comment decoration IDs
   const highlightDecorationsRef = useRef<string[]>([]); // Store highlight decoration IDs
   const scrollPositionRef = useRef<number>(0); // Store scroll position
+  const prCommentDecorationsRef = useRef<string[]>([]); // Store PR comment decoration IDs
+  const prCommentZonesRef = useRef<Map<number, { zoneId: string; widget: PRCommentZoneWidget }>>(new Map());
   const [activeCommentLine, setActiveCommentLine] = useState<{
     line: number;
+    endLine?: number;
     top: number;
   } | null>(null);
   const [forceDecorationUpdate, setForceDecorationUpdate] = useState(0);
@@ -68,62 +187,175 @@ function DiffEditorComponent({
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Create models with proper URIs if filePath and repoRoot are provided
-    let originalModel: monaco.editor.ITextModel;
-    let modifiedModel: monaco.editor.ITextModel;
-
-    if (filePath && repoRoot) {
-      // Original (base) model
-      const originalUri = monaco.Uri.file(`${repoRoot}/${filePath}.base`);
-      const existingOriginal = monaco.editor.getModel(originalUri);
-      if (existingOriginal) {
-        originalModel = existingOriginal;
-        originalModel.setValue(original);
-      } else {
-        originalModel = monaco.editor.createModel(original, language, originalUri);
-      }
-
-      // Modified (working) model
-      const modifiedUri = monaco.Uri.file(`${repoRoot}/${filePath}`);
-      const existingModified = monaco.editor.getModel(modifiedUri);
-      if (existingModified) {
-        modifiedModel = existingModified;
-        modifiedModel.setValue(modified);
-      } else {
-        modifiedModel = monaco.editor.createModel(modified, language, modifiedUri);
-      }
-    } else {
-      // Fallback: create models without URIs
-      originalModel = monaco.editor.createModel(original, language);
-      modifiedModel = monaco.editor.createModel(modified, language);
+    // Prevent double initialization in React StrictMode
+    if (diffEditorRef.current) {
+      return;
     }
 
-    originalModelRef.current = originalModel;
-    modifiedModelRef.current = modifiedModel;
+    // Create models asynchronously with VSCode service integration
+    const initializeModels = async () => {
+      let originalModel: monaco.editor.ITextModel;
+      let modifiedModel: monaco.editor.ITextModel;
 
-    // Create diff editor
-    diffEditorRef.current = monaco.editor.createDiffEditor(containerRef.current, {
-      theme,
-      automaticLayout: true,
-      readOnly: true,
-      minimap: { enabled: true },
-      scrollBeyondLastLine: false,
-      fontSize: 14,
-      renderSideBySide: true,
-      glyphMargin: true,
-    });
+      console.log('[DiffEditor] Initializing diff models:', {
+        filePath,
+        repoRoot,
+        language,
+        hasOriginal: !!original,
+        originalLength: original.length,
+        hasModified: !!modified,
+        modifiedLength: modified.length,
+        originalPreview: original.substring(0, 100),
+        modifiedPreview: modified.substring(0, 100),
+      });
 
-    diffEditorRef.current.setModel({
-      original: originalModel,
-      modified: modifiedModel,
-    });
+      // HYBRID APPROACH: Register with LSP AND create model reference to trigger LSP sync
+      // Then use standard models for DiffEditor compatibility
+      if (filePath && repoRoot) {
 
-    // Add click handler for glyph margin and line numbers on modified editor
-    const modifiedEditor = diffEditorRef.current.getModifiedEditor();
+        const originalUri = monaco.Uri.file(`${repoRoot}/${filePath}.base`);
+        const modifiedUri = monaco.Uri.file(`${repoRoot}/${filePath}`);
 
-    modifiedEditor.onMouseDown((e) => {
+        // Step 1: Register files with VSCode file system
+        try {
+          const { RegisteredMemoryFile, ensureFileSystemProvider } = await import('../utils/monacoModels.js');
+          const fileSystemProvider = ensureFileSystemProvider();
+
+          // Check if file is already registered to avoid "file already exists" error
+          const existingFiles = (window as any).__registeredFiles || new Set();
+          const modifiedUriString = modifiedUri.toString();
+
+          if (!existingFiles.has(modifiedUriString)) {
+            // Register modified file (most important for LSP)
+            const modifiedFile = new RegisteredMemoryFile(modifiedUri, modified);
+            fileSystemProvider.registerFile(modifiedFile);
+            existingFiles.add(modifiedUriString);
+            (window as any).__registeredFiles = existingFiles;
+          } else {
+          }
+        } catch (error) {
+          console.warn('[DiffEditor] Failed to register with file system:', error);
+        }
+
+        // Step 2: Create model reference to trigger LSP's textDocument/didOpen notification
+        // This is critical for LSP to index the file for "Go to References"
+        try {
+          const { createModelReference } = await import('@codingame/monaco-vscode-api/monaco');
+          const lspModelRef = await createModelReference(modifiedUri);
+
+          // Store reference to keep LSP model alive (don't dispose)
+          // But we won't use this model for DiffEditor
+          (window as any).__lspModelRefs = (window as any).__lspModelRefs || new Map();
+          (window as any).__lspModelRefs.set(modifiedUri.toString(), lspModelRef);
+
+        } catch (error) {
+          console.warn('[DiffEditor] Failed to create LSP model reference:', error);
+        }
+
+        // Step 3: Create standard Monaco models for DiffEditor (compatible with diff view)
+        originalModel = createStandardModel(original, language, originalUri);
+        modifiedModel = createStandardModel(modified, language, modifiedUri);
+
+        console.log('[DiffEditor] Standard models created:', {
+          originalUri: originalModel.uri.toString(),
+          modifiedUri: modifiedModel.uri.toString(),
+          language,
+          originalContentLength: originalModel.getValue().length,
+          modifiedContentLength: modifiedModel.getValue().length,
+        });
+      } else {
+        // Fallback: create models without URIs (no LSP support)
+        originalModel = createStandardModel(original, language);
+        modifiedModel = createStandardModel(modified, language);
+      }
+
+      originalModelRef.current = originalModel;
+      modifiedModelRef.current = modifiedModel;
+
+      // Create diff editor (check again to prevent race condition)
+      if (diffEditorRef.current || !containerRef.current) {
+        return;
+      }
+
+      diffEditorRef.current = monaco.editor.createDiffEditor(containerRef.current, {
+        theme,
+        automaticLayout: true,
+        readOnly: true,
+        minimap: { enabled: false }, // Disable to avoid memory issues
+        scrollBeyondLastLine: false,
+        fontSize: 14,
+        renderSideBySide: true,
+        glyphMargin: true,
+        contextmenu: true, // Explicitly enable context menu for LSP features
+      });
+
+      diffEditorRef.current.setModel({
+        original: originalModel,
+        modified: modifiedModel,
+      });
+
+      // LSP features should be automatically registered by MonacoLanguageClient
+
+      // Wait for LSP server to index the file
+      // The LSP server needs a few seconds to process and index newly opened files
+
+      // Add click handler for glyph margin and line numbers on modified editor
+      const modifiedEditor = diffEditorRef.current.getModifiedEditor();
+
+      // DISABLED LSP: Register LSP actions for navigation (Go to Definition, Find References, etc.)
+      // registerLSPActions(modifiedEditor, {
+      //   onShowReferences: (references, title) => {
+      //     console.log('[DiffEditor] Received references from LSP:', references.length);
+      //     if (onShowReferences) {
+      //       onShowReferences(references, title);
+      //     }
+      //   },
+      //   onNavigateToLocation: (uri, line, column) => {
+      //     console.log('[DiffEditor] Navigate to location:', { uri, line, column });
+      //     if (onNavigateToLocation) {
+      //       onNavigateToLocation(uri, line, column);
+      //     }
+      //   },
+      //   onSearchInProject: (query, currentFile, currentLine) => {
+      //     console.log('[DiffEditor] Search in project:', { query, currentFile, currentLine });
+      //     if (onSearchInProject) {
+      //       onSearchInProject(query, currentFile, currentLine);
+      //     }
+      //   },
+      // });
+
+      // Register Tree-sitter based code navigation actions
+      if (worktreePath && repoRoot) {
+        registerTreeSitterActions(modifiedEditor, {
+          worktreePath,
+          repoRoot,
+          onShowReferences: (references, title) => {
+            console.log('[DiffEditor] Received references from Tree-sitter:', references.length);
+            if (onShowReferences) {
+              onShowReferences(references, title);
+            }
+          },
+          onNavigateToLocation: (uri, line, column) => {
+            console.log('[DiffEditor] Navigate to location:', { uri, line, column });
+            if (onNavigateToLocation) {
+              onNavigateToLocation(uri, line, column);
+            }
+          },
+          onSearchInProject: (query, currentFile, currentLine) => {
+            console.log('[DiffEditor] Search in project:', { query, currentFile, currentLine });
+            if (onSearchInProject) {
+              onSearchInProject(query, currentFile, currentLine);
+            }
+          },
+        });
+      }
+
+      // Tree-sitter navigation features are now active
+
+      modifiedEditor.onMouseDown((e) => {
       const lineNumber = e.target.position?.lineNumber;
 
+      // Check for immediate actions only (AI review)
       if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
         if (lineNumber) {
           // Check if this is an AI review decoration
@@ -131,378 +363,112 @@ function DiffEditorComponent({
             const aiDecoration = findDecorationAtLine(aiReviewDataRef.current, lineNumber);
             if (aiDecoration) {
               onAIReviewClick(aiDecoration);
-              return; // Don't trigger add comment for AI review items
+              e.event.preventDefault();
+              e.event.stopPropagation();
+              return;
+            }
+          }
+        }
+      }
+    });
+
+      // Handle mouseUp to check selection after drag
+      modifiedEditor.onMouseUp((e) => {
+      const lineNumber = e.target.position?.lineNumber;
+
+      if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
+          e.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
+        if (lineNumber) {
+          // Don't show comment form if clicking on AI review icons
+          if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
+            // Check if this line has AI review decoration
+            if (onAIReviewClick) {
+              const aiDecoration = findDecorationAtLine(aiReviewDataRef.current, lineNumber);
+              if (aiDecoration) {
+                return; // Don't show comment form for AI review icons
+              }
             }
           }
 
-          // Otherwise, show inline comment form
-          const lineTop = modifiedEditor.getTopForLineNumber(lineNumber);
+          const selection = modifiedEditor.getSelection();
+          let startLine = lineNumber;
+          let endLine = lineNumber;
+
+          // Check if user dragged to select multiple lines
+          if (selection && !selection.isEmpty()) {
+            startLine = selection.startLineNumber;
+            endLine = selection.endLineNumber;
+          }
+
+          // Show comment form with appropriate line range
+          const lineTop = modifiedEditor.getTopForLineNumber(startLine);
           const scrollTop = modifiedEditor.getScrollTop();
           setActiveCommentLine({
-            line: lineNumber,
-            top: lineTop - scrollTop + 20, // Offset below the line
-          });
-        }
-      } else if (e.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
-        // Click on line numbers also shows comment form
-        if (lineNumber) {
-          const lineTop = modifiedEditor.getTopForLineNumber(lineNumber);
-          const scrollTop = modifiedEditor.getScrollTop();
-          setActiveCommentLine({
-            line: lineNumber,
+            line: startLine,
+            endLine: endLine !== startLine ? endLine : undefined,
             top: lineTop - scrollTop + 20,
           });
         }
       }
     });
 
-    // Add code navigation actions to modified editor
-    if (onShowReferences && onNavigateToLocation) {
-      // Find All References (Shift+F12)
-      modifiedEditor.addAction({
-        id: 'find-all-references-diff',
-        label: 'Find All References',
-        keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
-        contextMenuGroupId: 'navigation',
-        contextMenuOrder: 1.5,
-        run: async (ed) => {
-          const model = ed.getModel();
-          const position = ed.getPosition();
-          if (!model || !position) return;
+      // Note: LSP-based code navigation has been disabled in favor of Tree-sitter approach.
+      // "Find in Project" (Alt+Shift+F12) is available via ripgrep-based search.
 
-          try {
-            const references = await monaco.languages.getReferences(
-              model.uri,
-              position,
-              { includeDeclaration: false }
-            );
+      // Add "Comment on Selection" action to context menu
+      if (onAddComment) {
+        modifiedEditor.addAction({
+        id: 'add-comment-selection-diff',
+        label: 'Add Comment on Selection',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyC],
+        contextMenuGroupId: '9_cutcopypaste',
+        contextMenuOrder: 3,
+        precondition: 'editorHasSelection',
+        run: (ed) => {
+          const selection = ed.getSelection();
+          if (!selection || selection.isEmpty()) return;
 
-            if (references && references.length > 0) {
-              const codeReferences: CodeReference[] = references.map(ref => ({
-                uri: ref.uri.toString(),
-                range: ref.range,
-                preview: undefined,
-              }));
-              onShowReferences(codeReferences, 'Find All References');
-            } else {
-              console.log('[DiffEditor] No references found');
-            }
-          } catch (error) {
-            console.error('[DiffEditor] Error finding references:', error);
-          }
+          const startLine = selection.startLineNumber;
+          const endLine = selection.endLineNumber;
+
+          const lineTop = ed.getTopForLineNumber(startLine);
+          const scrollTop = ed.getScrollTop();
+          setActiveCommentLine({
+            line: startLine,
+            endLine: endLine !== startLine ? endLine : undefined,
+            top: lineTop - scrollTop + 20,
+          });
         },
-      });
+        });
+      }
+    };
 
-      // Go to Implementations (Ctrl/Cmd+F12)
-      modifiedEditor.addAction({
-        id: 'go-to-implementations-diff',
-        label: 'Go to Implementations',
-        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.F12],
-        contextMenuGroupId: 'navigation',
-        contextMenuOrder: 1.6,
-        run: async (ed) => {
-          const model = ed.getModel();
-          const position = ed.getPosition();
-          if (!model || !position) return;
-
-          try {
-            const implementations = await monaco.languages.getImplementation(
-              model.uri,
-              position
-            );
-
-            if (implementations && implementations.length > 0) {
-              if (implementations.length === 1) {
-                const impl = implementations[0];
-                onNavigateToLocation(
-                  impl.uri.toString(),
-                  impl.range.startLineNumber,
-                  impl.range.startColumn
-                );
-              } else {
-                const codeReferences: CodeReference[] = implementations.map(impl => ({
-                  uri: impl.uri.toString(),
-                  range: impl.range,
-                  preview: undefined,
-                }));
-                onShowReferences(codeReferences, 'Go to Implementations');
-              }
-            } else {
-              console.log('[DiffEditor] No implementations found');
-            }
-          } catch (error) {
-            console.error('[DiffEditor] Error finding implementations:', error);
-          }
-        },
-      });
-
-      // Go to Type Definition
-      modifiedEditor.addAction({
-        id: 'go-to-type-definition-diff',
-        label: 'Go to Type Definition',
-        keybindings: [],
-        contextMenuGroupId: 'navigation',
-        contextMenuOrder: 1.7,
-        run: async (ed) => {
-          const model = ed.getModel();
-          const position = ed.getPosition();
-          if (!model || !position) return;
-
-          try {
-            const typeDefinitions = await monaco.languages.getTypeDefinition(
-              model.uri,
-              position
-            );
-
-            if (typeDefinitions && typeDefinitions.length > 0) {
-              if (typeDefinitions.length === 1) {
-                const typeDef = typeDefinitions[0];
-                onNavigateToLocation(
-                  typeDef.uri.toString(),
-                  typeDef.range.startLineNumber,
-                  typeDef.range.startColumn
-                );
-              } else {
-                const codeReferences: CodeReference[] = typeDefinitions.map(typeDef => ({
-                  uri: typeDef.uri.toString(),
-                  range: typeDef.range,
-                  preview: undefined,
-                }));
-                onShowReferences(codeReferences, 'Go to Type Definition');
-              }
-            } else {
-              console.log('[DiffEditor] No type definitions found');
-            }
-          } catch (error) {
-            console.error('[DiffEditor] Error finding type definitions:', error);
-          }
-        },
-      });
-
-      // Go to Declaration
-      modifiedEditor.addAction({
-        id: 'go-to-declaration-diff',
-        label: 'Go to Declaration',
-        keybindings: [],
-        contextMenuGroupId: 'navigation',
-        contextMenuOrder: 1.8,
-        run: async (ed) => {
-          const model = ed.getModel();
-          const position = ed.getPosition();
-          if (!model || !position) return;
-
-          try {
-            const declarations = await monaco.languages.getDeclaration(
-              model.uri,
-              position
-            );
-
-            if (declarations && declarations.length > 0) {
-              if (declarations.length === 1) {
-                const decl = declarations[0];
-                onNavigateToLocation(
-                  decl.uri.toString(),
-                  decl.range.startLineNumber,
-                  decl.range.startColumn
-                );
-              } else {
-                const codeReferences: CodeReference[] = declarations.map(decl => ({
-                  uri: decl.uri.toString(),
-                  range: decl.range,
-                  preview: undefined,
-                }));
-                onShowReferences(codeReferences, 'Go to Declaration');
-              }
-            } else {
-              console.log('[DiffEditor] No declarations found');
-            }
-          } catch (error) {
-            console.error('[DiffEditor] Error finding declarations:', error);
-          }
-        },
-      });
-
-      // Go to Usage (navigate to first reference)
-      modifiedEditor.addAction({
-        id: 'go-to-usage-diff',
-        label: 'Go to Usage',
-        keybindings: [],
-        contextMenuGroupId: 'navigation',
-        contextMenuOrder: 1.9,
-        run: async (ed) => {
-          const model = ed.getModel();
-          const position = ed.getPosition();
-          if (!model || !position) return;
-
-          try {
-            const references = await monaco.languages.getReferences(
-              model.uri,
-              position,
-              { includeDeclaration: false }
-            );
-
-            if (references && references.length > 0) {
-              // Navigate to the first usage
-              const firstRef = references[0];
-              onNavigateToLocation(
-                firstRef.uri.toString(),
-                firstRef.range.startLineNumber,
-                firstRef.range.startColumn
-              );
-            } else {
-              console.log('[DiffEditor] No usages found');
-            }
-          } catch (error) {
-            console.error('[DiffEditor] Error finding usages:', error);
-          }
-        },
-      });
-
-      // Go to Super Method
-      modifiedEditor.addAction({
-        id: 'go-to-super-method-diff',
-        label: 'Go to Super Method',
-        keybindings: [],
-        contextMenuGroupId: 'navigation',
-        contextMenuOrder: 2.0,
-        run: async (ed) => {
-          const model = ed.getModel();
-          const position = ed.getPosition();
-          if (!model || !position) return;
-
-          try {
-            // Try to get the type hierarchy and find super types
-            const typeHierarchy = await monaco.languages.prepareTypeHierarchy(
-              model.uri,
-              position
-            );
-
-            if (typeHierarchy && typeHierarchy.length > 0) {
-              // Get super types for the first item
-              const superTypes = await monaco.languages.provideSupertypes(
-                typeHierarchy[0]
-              );
-
-              if (superTypes && superTypes.length > 0) {
-                if (superTypes.length === 1) {
-                  // Navigate directly if only one super type
-                  const superType = superTypes[0];
-                  onNavigateToLocation(
-                    superType.uri.toString(),
-                    superType.range.startLineNumber,
-                    superType.range.startColumn
-                  );
-                } else {
-                  // Show list if multiple super types
-                  const codeReferences: CodeReference[] = superTypes.map(st => ({
-                    uri: st.uri.toString(),
-                    range: st.range,
-                    preview: undefined,
-                  }));
-                  onShowReferences(codeReferences, 'Go to Super Method');
-                }
-              } else {
-                console.log('[DiffEditor] No super methods found');
-              }
-            } else {
-              console.log('[DiffEditor] No type hierarchy available');
-            }
-          } catch (error) {
-            console.error('[DiffEditor] Error finding super method:', error);
-          }
-        },
-      });
-
-      // Go to Test
-      modifiedEditor.addAction({
-        id: 'go-to-test-diff',
-        label: 'Go to Test',
-        keybindings: [],
-        contextMenuGroupId: 'navigation',
-        contextMenuOrder: 2.1,
-        run: async (ed) => {
-          const model = ed.getModel();
-          if (!model) return;
-
-          try {
-            const currentUri = model.uri.toString();
-
-            // Extract file path from URI
-            const filePath = currentUri.replace(/^file:\/\//, '');
-
-            // Generate possible test file patterns
-            const testPatterns = [
-              filePath.replace(/\.(ts|tsx|js|jsx)$/, '.test.$1'),
-              filePath.replace(/\.(ts|tsx|js|jsx)$/, '.spec.$1'),
-              filePath.replace(/\/src\//, '/tests/'),
-              filePath.replace(/\/components\//, '/components/__tests__/'),
-            ];
-
-            // Try to find test files by checking if models exist
-            let testFileFound = false;
-            for (const pattern of testPatterns) {
-              const testUri = monaco.Uri.file(pattern);
-              const testModel = monaco.editor.getModel(testUri);
-
-              if (testModel) {
-                // Found a test file, navigate to it
-                onNavigateToLocation(testUri.toString(), 1, 1);
-                testFileFound = true;
-                break;
-              }
-            }
-
-            if (!testFileFound) {
-              // If no direct test file found, search for references in test files
-              const position = ed.getPosition();
-              if (position) {
-                const references = await monaco.languages.getReferences(
-                  model.uri,
-                  position,
-                  { includeDeclaration: false }
-                );
-
-                // Filter references to test files
-                const testReferences = references?.filter(ref =>
-                  ref.uri.path.includes('.test.') ||
-                  ref.uri.path.includes('.spec.') ||
-                  ref.uri.path.includes('__tests__')
-                ) || [];
-
-                if (testReferences.length > 0) {
-                  if (testReferences.length === 1) {
-                    const testRef = testReferences[0];
-                    onNavigateToLocation(
-                      testRef.uri.toString(),
-                      testRef.range.startLineNumber,
-                      testRef.range.startColumn
-                    );
-                  } else {
-                    const codeReferences: CodeReference[] = testReferences.map(ref => ({
-                      uri: ref.uri.toString(),
-                      range: ref.range,
-                      preview: undefined,
-                    }));
-                    onShowReferences(codeReferences, 'Go to Test');
-                  }
-                } else {
-                  console.log('[DiffEditor] No test file found');
-                }
-              }
-            }
-          } catch (error) {
-            console.error('[DiffEditor] Error finding test:', error);
-          }
-        },
-      });
-    }
+    // Initialize models and editor
+    initializeModels().catch(error => {
+      console.error('[DiffEditor] Failed to initialize models:', error);
+    });
 
     return () => {
-      // Dispose editor first
+      // Clean up zone widgets first
+      if (diffEditorRef.current && prCommentZonesRef.current.size > 0) {
+        const modifiedEditor = diffEditorRef.current.getModifiedEditor();
+        if (modifiedEditor) {
+          modifiedEditor.changeViewZones((changeAccessor) => {
+            prCommentZonesRef.current.forEach(({ zoneId, widget }) => {
+              changeAccessor.removeZone(zoneId);
+              widget.dispose();
+            });
+          });
+          prCommentZonesRef.current.clear();
+        }
+      }
+
+      // Dispose editor
       if (diffEditorRef.current) {
         diffEditorRef.current.dispose();
       }
-      // Only dispose models if they're not shared (no URI)
+      // VSCode-integrated models are managed by the model reference system
+      // Only dispose standard models (created without filePath/repoRoot)
       if (originalModelRef.current && !filePath && !repoRoot) {
         originalModelRef.current.dispose();
       }
@@ -510,7 +476,7 @@ function DiffEditorComponent({
         modifiedModelRef.current.dispose();
       }
     };
-  }, [onAddComment, onShowReferences, onNavigateToLocation, filePath, repoRoot]);
+  }, [onAddComment, onShowReferences, onNavigateToLocation, onSearchInProject, filePath, repoRoot, worktreePath]);
 
   // Update content when it changes
   useEffect(() => {
@@ -541,36 +507,15 @@ function DiffEditorComponent({
 
   // Highlight and scroll to specific line
   useEffect(() => {
-    if (!diffEditorRef.current || !highlightLine) return;
+    if (!diffEditorRef.current) return;
 
+    // Support both old (highlightLine) and new (highlightLines) API
+    const lines = highlightLines || (highlightLine ? { modified: highlightLine } : null);
+    if (!lines || (!lines.original && !lines.modified)) return;
+
+    const originalEditor = diffEditorRef.current.getOriginalEditor();
     const modifiedEditor = diffEditorRef.current.getModifiedEditor();
-    if (!modifiedEditor) return;
 
-    console.log('[DiffEditor] Highlighting line:', highlightLine);
-
-    // Add highlight decoration
-    const newDecorations: monaco.editor.IModelDeltaDecoration[] = [{
-      range: new monaco.Range(highlightLine, 1, highlightLine, 1),
-      options: {
-        isWholeLine: true,
-        className: 'highlighted-line',
-        glyphMarginClassName: 'highlighted-line-glyph',
-        linesDecorationsClassName: 'highlighted-line-decoration',
-      },
-    }];
-
-    highlightDecorationsRef.current = modifiedEditor.deltaDecorations(
-      highlightDecorationsRef.current,
-      newDecorations
-    );
-
-    // Scroll to the line with a slight delay to ensure editor is ready
-    setTimeout(() => {
-      if (modifiedEditor && !modifiedEditor.getModel()?.isDisposed()) {
-        modifiedEditor.revealLineInCenter(highlightLine);
-        console.log('[DiffEditor] Scrolled to line:', highlightLine);
-      }
-    }, 100);
 
     // Add CSS for highlighting
     const styleId = 'diff-highlight-line-style';
@@ -591,7 +536,96 @@ function DiffEditorComponent({
       `;
       document.head.appendChild(style);
     }
-  }, [highlightLine]);
+
+    const column = highlightColumn || 1;
+
+    // Highlight original (before) editor
+    if (lines.original && originalEditor) {
+      const newDecorations: monaco.editor.IModelDeltaDecoration[] = [{
+        range: new monaco.Range(lines.original, 1, lines.original, 1),
+        options: {
+          isWholeLine: true,
+          className: 'highlighted-line',
+          glyphMarginClassName: 'highlighted-line-glyph',
+          linesDecorationsClassName: 'highlighted-line-decoration',
+        },
+      }];
+
+      highlightDecorationsRef.current = originalEditor.deltaDecorations(
+        highlightDecorationsRef.current,
+        newDecorations
+      );
+
+      setTimeout(() => {
+        if (originalEditor && !originalEditor.getModel()?.isDisposed()) {
+          originalEditor.setPosition({ lineNumber: lines.original!, column });
+          originalEditor.revealPositionInCenter({ lineNumber: lines.original!, column });
+          originalEditor.focus();
+        }
+      }, 100);
+    }
+
+    // Highlight modified (after) editor
+    if (lines.modified && modifiedEditor) {
+      const newDecorations: monaco.editor.IModelDeltaDecoration[] = [{
+        range: new monaco.Range(lines.modified, 1, lines.modified, 1),
+        options: {
+          isWholeLine: true,
+          className: 'highlighted-line',
+          glyphMarginClassName: 'highlighted-line-glyph',
+          linesDecorationsClassName: 'highlighted-line-decoration',
+        },
+      }];
+
+      highlightDecorationsRef.current = modifiedEditor.deltaDecorations(
+        highlightDecorationsRef.current,
+        newDecorations
+      );
+
+      setTimeout(() => {
+        if (modifiedEditor && !modifiedEditor.getModel()?.isDisposed()) {
+          modifiedEditor.setPosition({ lineNumber: lines.modified!, column });
+          modifiedEditor.revealPositionInCenter({ lineNumber: lines.modified!, column });
+          modifiedEditor.focus();
+
+          // Highlight keyword if provided
+          if (highlightKeyword) {
+            const model = modifiedEditor.getModel();
+            if (model) {
+              const lineContent = model.getLineContent(lines.modified!);
+              const keywordIndex = lineContent.toLowerCase().indexOf(highlightKeyword.toLowerCase());
+              if (keywordIndex !== -1) {
+                const keywordDecorations: monaco.editor.IModelDeltaDecoration[] = [{
+                  range: new monaco.Range(lines.modified!, keywordIndex + 1, lines.modified!, keywordIndex + 1 + highlightKeyword.length),
+                  options: {
+                    className: 'keyword-highlight',
+                    inlineClassName: 'keyword-highlight-inline',
+                  },
+                }];
+                modifiedEditor.deltaDecorations([], keywordDecorations);
+
+                // Add CSS for keyword highlight if not already added
+                if (!document.getElementById('keyword-highlight-styles')) {
+                  const style = document.createElement('style');
+                  style.id = 'keyword-highlight-styles';
+                  style.textContent = `
+                    .keyword-highlight {
+                      background-color: rgba(255, 235, 59, 0.3) !important;
+                    }
+                    .keyword-highlight-inline {
+                      background-color: rgba(255, 235, 59, 0.5) !important;
+                      border-radius: 2px;
+                    }
+                  `;
+                  document.head.appendChild(style);
+                }
+              }
+            }
+          }
+        }
+      }, 100);
+    }
+  }, [highlightLine, highlightLines, highlightColumn, highlightKeyword]);
 
   // Save and restore scroll position to prevent scroll jumping
   useEffect(() => {
@@ -633,9 +667,6 @@ function DiffEditorComponent({
 
       // If we should have decorations but they're missing, restore them
       if (aiReviewDecorationsRef.current.length > 0 && existingAIDecorations.length === 0) {
-        console.log('[DiffEditor] MONITOR: Decorations lost, forcing restore...');
-        console.log('[DiffEditor] MONITOR: Should have:', aiReviewDecorationsRef.current.length);
-        console.log('[DiffEditor] MONITOR: Actually have:', existingAIDecorations.length);
 
         // Save current scroll position before forcing update
         scrollPositionRef.current = modifiedEditor.getScrollTop();
@@ -646,7 +677,6 @@ function DiffEditorComponent({
     }, 500); // Check every 500ms
 
     return () => {
-      console.log('[DiffEditor] MONITOR: Cleaning up decoration monitor');
       clearInterval(checkInterval);
     };
   }, [diffEditorRef.current]);
@@ -654,21 +684,16 @@ function DiffEditorComponent({
   // Add AI review decorations to modified editor
   useEffect(() => {
     if (!diffEditorRef.current || !filePath) {
-      console.log('[DiffEditor] Skipping AI decorations - no editor or filePath');
       return;
     }
 
     const modifiedEditor = diffEditorRef.current.getModifiedEditor();
 
-    console.log('[DiffEditor] Setting up AI review decorations for:', filePath);
-    console.log('[DiffEditor] AI review issues:', aiReviewIssues.length);
-    console.log('[DiffEditor] AI review call stacks:', aiReviewCallStacks.length);
 
     // Add CSS for AI review icons (do this first)
     const styleId = 'ai-review-decorations-style';
     let style = document.getElementById(styleId);
     if (!style) {
-      console.log('[DiffEditor] Adding AI review CSS styles');
       style = document.createElement('style');
       style.id = styleId;
       style.textContent = getAIReviewStyles();
@@ -695,22 +720,15 @@ function DiffEditorComponent({
         aiReviewDecorationsRef.current.length > 0 &&
         existingAIDecorations.length > 0 &&
         forceDecorationUpdate === 0) {
-      console.log('[DiffEditor] AI review data unchanged and decorations exist, skipping update');
-      console.log('[DiffEditor] Current decorations:', existingAIDecorations.length);
       return;
     }
 
     if (forceDecorationUpdate > 0) {
-      console.log('[DiffEditor] Force decoration update triggered:', forceDecorationUpdate);
     }
 
     if (existingAIDecorations.length === 0 && aiReviewDecorationsRef.current.length > 0) {
-      console.log('[DiffEditor] Decorations were lost, re-applying...');
     }
 
-    console.log('[DiffEditor] AI review data changed, updating decorations');
-    console.log('[DiffEditor] Previous key:', previousAIReviewDataRef.current.substring(0, 100));
-    console.log('[DiffEditor] Current key:', currentDataKey.substring(0, 100));
     previousAIReviewDataRef.current = currentDataKey;
 
     // Process AI review data for this file
@@ -720,18 +738,14 @@ function DiffEditorComponent({
       aiReviewCallStacks
     );
 
-    console.log('[DiffEditor] Initial decorations:', aiDecorations.length);
 
     // Detect function lines for call stack decorations
     if (aiReviewCallStacks && aiReviewCallStacks.length > 0) {
-      console.log('[DiffEditor] Detecting function lines in modified code...');
       aiDecorations = aiDecorations.map((decoration) => {
         if (decoration.type === 'callstack') {
           const callStack = decoration.data as CallStackInfo;
-          console.log('[DiffEditor] Looking for function:', callStack.function, 'in file:', callStack.file);
           const functionLines = detectFunctionLines(modified, callStack.function);
           if (functionLines.length > 0) {
-            console.log('[DiffEditor] Found function at line:', functionLines[0]);
             return { ...decoration, line: functionLines[0] };
           } else {
             console.warn('[DiffEditor] Function not found:', callStack.function);
@@ -750,31 +764,26 @@ function DiffEditorComponent({
       return true;
     });
 
-    console.log('[DiffEditor] Valid decorations after filtering:', validDecorations.length);
 
     // Store decorations for click handling
     aiReviewDataRef.current = validDecorations;
 
     // Create Monaco decorations
     const monacoDecorations = createAIReviewDecorations(validDecorations);
-    console.log('[DiffEditor] About to apply decorations to editor...');
 
     const previousDecorations = aiReviewDecorationsRef.current;
-    console.log('[DiffEditor] Previous decorations count:', previousDecorations.length);
 
     aiReviewDecorationsRef.current = modifiedEditor.deltaDecorations(
       previousDecorations,
       monacoDecorations
     );
 
-    console.log('[DiffEditor] Applied decorations, new IDs count:', aiReviewDecorationsRef.current.length);
 
     // Restore scroll position after decorations are applied
     if (scrollPositionRef.current > 0) {
       // Use requestAnimationFrame to ensure decorations are rendered
       requestAnimationFrame(() => {
         modifiedEditor.setScrollTop(scrollPositionRef.current);
-        console.log('[DiffEditor] Restored scroll position:', scrollPositionRef.current);
       });
     }
   }, [modified, filePath, aiReviewIssues, aiReviewCallStacks, forceDecorationUpdate]);
@@ -855,6 +864,89 @@ function DiffEditorComponent({
     }
   }, [comments]);
 
+  // Clean up and create PR comment zone widgets
+  useEffect(() => {
+    if (!diffEditorRef.current) return;
+
+    const modifiedEditor = diffEditorRef.current.getModifiedEditor();
+    if (!modifiedEditor) return;
+
+    // Clean up existing zone widgets
+    if (prCommentZonesRef.current.size > 0) {
+      modifiedEditor.changeViewZones((changeAccessor) => {
+        prCommentZonesRef.current.forEach(({ zoneId, widget }) => {
+          changeAccessor.removeZone(zoneId);
+          widget.dispose();
+        });
+      });
+      prCommentZonesRef.current.clear();
+    }
+
+    // Clear decorations if no comments
+    if (!prComments || prComments.length === 0) {
+      const previousDecorations = prCommentDecorationsRef.current || [];
+      prCommentDecorationsRef.current = modifiedEditor.deltaDecorations(previousDecorations, []);
+      return;
+    }
+
+    // Add line decorations (just highlight, no glyph icon)
+    const newDecorations: monaco.editor.IModelDeltaDecoration[] = prComments.map((thread) => {
+      return {
+        range: new monaco.Range(thread.line, 1, thread.line, 1),
+        options: {
+          isWholeLine: false,
+          linesDecorationsClassName: thread.isResolved
+            ? 'pr-comment-resolved-decoration'
+            : 'pr-comment-decoration',
+        },
+      };
+    });
+
+    const previousDecorations = prCommentDecorationsRef.current || [];
+    prCommentDecorationsRef.current = modifiedEditor.deltaDecorations(
+      previousDecorations,
+      newDecorations
+    );
+
+    // Create zone widgets for PR comments
+    modifiedEditor.changeViewZones((changeAccessor) => {
+      prComments.forEach((thread) => {
+        const widget = new PRCommentZoneWidget(
+          thread.line,
+          thread,
+          currentUser,
+          onPRCommentReply || (async () => {}),
+          onPRCommentReact || (async () => {}),
+          onPRCommentResolve
+        );
+
+        const zoneId = changeAccessor.addZone(widget);
+        prCommentZonesRef.current.set(thread.line, { zoneId, widget });
+      });
+    });
+
+    // Add CSS for PR comment decorations
+    const styleId = 'diff-pr-comment-decorations-style';
+    const existingStyle = document.getElementById(styleId);
+    if (!existingStyle) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        .pr-comment-decoration {
+          background-color: rgba(59, 130, 246, 0.2) !important;
+          width: 3px !important;
+          margin-left: 3px;
+        }
+        .pr-comment-resolved-decoration {
+          background-color: rgba(34, 197, 94, 0.15) !important;
+          width: 3px !important;
+          margin-left: 3px;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  }, [prComments, currentUser, onPRCommentReply, onPRCommentReact, onPRCommentResolve]);
+
   return (
     <div style={{ height, width: '100%', position: 'relative' }}>
       <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
@@ -865,9 +957,8 @@ function DiffEditorComponent({
           style={{
             position: 'absolute',
             top: activeCommentLine.top,
-            right: 10,
-            left: '50%', // Show on the right (modified) side
-            maxWidth: '600px',
+            right: 20,
+            left: 20,
             zIndex: 1000,
             boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
           }}
@@ -875,6 +966,7 @@ function DiffEditorComponent({
           <CommentForm
             file={filePath}
             line={activeCommentLine.line}
+            endLine={activeCommentLine.endLine}
             onSubmit={(body) => {
               if (onAddComment) {
                 onAddComment(activeCommentLine.line, body);

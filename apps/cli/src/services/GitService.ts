@@ -207,8 +207,11 @@ export class GitService {
   async cloneOrUpdateRepo(owner: string, repo: string, targetPath: string): Promise<string> {
     const repoUrl = `https://github.com/${owner}/${repo}.git`;
 
-    // Check if repository already exists
-    if (existsSync(join(targetPath, '.git'))) {
+    // Check if repository already exists (bare repo has 'config' file at root)
+    const isBareRepo = existsSync(join(targetPath, 'config')) && !existsSync(join(targetPath, '.git'));
+    const isNormalRepo = existsSync(join(targetPath, '.git'));
+
+    if (isBareRepo || isNormalRepo) {
       console.log(`Repository already exists at ${targetPath}, fetching updates...`);
 
       try {
@@ -222,8 +225,8 @@ export class GitService {
       }
     }
 
-    // Clone the repository
-    console.log(`Cloning repository ${owner}/${repo} to ${targetPath}...`);
+    // Clone the repository as bare repo to save space
+    console.log(`Cloning bare repository ${owner}/${repo} to ${targetPath}...`);
 
     try {
       // Ensure parent directory exists
@@ -232,13 +235,13 @@ export class GitService {
         mkdirSync(parentDir, { recursive: true });
       }
 
-      // Clone with --bare to save space, or normal clone
-      await execa('git', ['clone', repoUrl, targetPath]);
+      // Clone with --bare to save space (no working directory)
+      await execa('git', ['clone', '--bare', repoUrl, targetPath]);
 
       // Fetch all PR refs
       await execa('git', ['fetch', 'origin', '+refs/pull/*/head:refs/remotes/origin/pr/*'], { cwd: targetPath });
 
-      console.log('✓ Repository cloned successfully');
+      console.log('✓ Bare repository cloned successfully');
       return targetPath;
     } catch (error: any) {
       throw new Error(`Failed to clone repository: ${error.message}`);
@@ -263,5 +266,86 @@ export class GitService {
     } catch (error: any) {
       throw new Error(`Failed to fetch PR: ${error.message}`);
     }
+  }
+
+  /**
+   * Ensure a worktree exists for a specific PR
+   * Uses the new structure: ~/.highreview/worktrees/{owner}-{repo}/pr-{number}
+   * This allows multiple PRs from the same repo to share the bare repository
+   */
+  async ensureWorktreeForPR(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    commitHash: string,
+    repoPath: string,
+    worktreePath: string
+  ): Promise<string> {
+    console.log(`[Worktree] Ensuring worktree for PR #${prNumber} at ${worktreePath}`);
+
+    // Check if worktree already exists
+    const existingWorktrees = await this.listWorktrees(repoPath);
+    const existing = existingWorktrees.find(w => w.path === worktreePath);
+
+    if (existing) {
+      console.log(`[Worktree] Worktree already exists at: ${existing.path}`);
+
+      // Check if commit matches, if not checkout to the correct commit
+      if (existing.commit !== commitHash) {
+        console.log(`[Worktree] Commit mismatch, checking out to ${commitHash.substring(0, 7)}...`);
+        try {
+          await execa('git', ['checkout', '--detach', commitHash], { cwd: worktreePath });
+          console.log(`✓ Checked out to correct commit`);
+        } catch (error: any) {
+          console.error(`[Worktree] Failed to checkout:`, error.message);
+          // If checkout fails, remove and recreate
+          console.log(`[Worktree] Removing stale worktree and recreating...`);
+          await this.removeWorktree(worktreePath, repoPath);
+          // Continue to create new worktree below
+        }
+      } else {
+        return existing.path;
+      }
+    }
+
+    // If worktree doesn't exist or was removed, create new one
+    if (!existing || existing.commit !== commitHash) {
+      // If the directory exists but is not in worktree list, prune and retry
+      if (existsSync(worktreePath)) {
+        console.log('[Worktree] Stale worktree directory detected, pruning...');
+        await this.pruneWorktrees(repoPath);
+      }
+
+      // Create new worktree in detached HEAD mode
+      try {
+        console.log(`[Worktree] Creating worktree at: ${worktreePath}`);
+        await execa(
+          'git',
+          ['worktree', 'add', '--detach', worktreePath, commitHash],
+          { cwd: repoPath }
+        );
+        console.log(`✓ Worktree created successfully`);
+        return worktreePath;
+      } catch (error: any) {
+        // If creation fails due to lock, try pruning and retry once
+        if (error.message?.includes('locked') || error.message?.includes('already exists')) {
+          console.log('[Worktree] Lock detected, pruning and retrying...');
+          await this.pruneWorktrees(repoPath);
+
+          // Retry
+          await execa(
+            'git',
+            ['worktree', 'add', '--detach', worktreePath, commitHash],
+            { cwd: repoPath }
+          );
+          console.log(`✓ Worktree created successfully (after retry)`);
+          return worktreePath;
+        }
+
+        throw new Error(`Failed to create worktree: ${error.message}`);
+      }
+    }
+
+    return worktreePath;
   }
 }
