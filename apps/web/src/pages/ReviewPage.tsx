@@ -117,6 +117,7 @@ export function ReviewPage({
   const { language } = useLanguage();
   const location = useLocation();
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
+  const [initialScrollPosition, setInitialScrollPosition] = useState<'top' | 'bottom'>('top');
   const [showChat, setShowChat] = useState(() => {
     const saved = localStorage.getItem('highreview-show-chat');
     return saved !== null ? saved === 'true' : true;
@@ -365,6 +366,7 @@ export function ReviewPage({
 
       const fileNode = findFileInTree(treeData.tree, initialFilePath);
       if (fileNode) {
+        setInitialScrollPosition('top');
         setSelectedFile(fileNode);
         // Auto-open chat panel and highlight line if there's comment info
         if (commentInfo) {
@@ -453,9 +455,40 @@ export function ReviewPage({
 
   const handleFileClick = (node: FileNode) => {
     if (node.type === 'file') {
+      setInitialScrollPosition('top');
       setSelectedFile(node);
     }
   };
+
+  const handleNavigateNext = useCallback(() => {
+    if (!prData?.files || !selectedFile) return;
+    const files = prData.files;
+    const currentIndex = files.findIndex((f: any) => f.path === selectedFile.path);
+    if (currentIndex >= 0 && currentIndex < files.length - 1) {
+      const nextFile = files[currentIndex + 1];
+      setInitialScrollPosition('top');
+      setSelectedFile({
+        path: nextFile.path,
+        name: nextFile.filename,
+        type: 'file'
+      });
+    }
+  }, [prData, selectedFile]);
+
+  const handleNavigatePrev = useCallback(() => {
+    if (!prData?.files || !selectedFile) return;
+    const files = prData.files;
+    const currentIndex = files.findIndex((f: any) => f.path === selectedFile.path);
+    if (currentIndex > 0) {
+      const prevFile = files[currentIndex - 1];
+      setInitialScrollPosition('bottom');
+      setSelectedFile({
+        path: prevFile.path,
+        name: prevFile.filename,
+        type: 'file'
+      });
+    }
+  }, [prData, selectedFile]);
 
   const getLanguageFromFilename = (filename: string): string => {
     const ext = filename.split('.').pop()?.toLowerCase();
@@ -1081,6 +1114,7 @@ export function ReviewPage({
     if (treeData?.tree) {
       const fileNode = findFileInTree(treeData.tree, filePath);
       if (fileNode) {
+        setInitialScrollPosition('top');
         setSelectedFile(fileNode);
         setHighlightLine(line); // Highlight the target line
         setHighlightColumn(column); // Set the target column for cursor positioning
@@ -1102,6 +1136,7 @@ export function ReviewPage({
 
     const fileNode = findFileInTree(treeData.tree, file);
     if (fileNode) {
+      setInitialScrollPosition('top');
       setSelectedFile(fileNode);
       setHighlightLine(line);
       setPendingFunctionName(functionName);
@@ -2032,6 +2067,9 @@ export function ReviewPage({
                               aiReviewCallStacks={aiReviewCallStacks}
                               onAIReviewClick={handleAIReviewDecorationClick}
                               prComments={currentFileComments}
+                              onNavigateNext={handleNavigateNext}
+                              onNavigatePrev={handleNavigatePrev}
+                              initialScrollPosition={initialScrollPosition}
                             />
                           );
                         } else if (diffError) {
@@ -2080,6 +2118,9 @@ export function ReviewPage({
                             aiReviewCallStacks={aiReviewCallStacks}
                             onAIReviewClick={handleAIReviewDecorationClick}
                             prComments={currentFileComments}
+                            onNavigateNext={handleNavigateNext}
+                            onNavigatePrev={handleNavigatePrev}
+                            initialScrollPosition={initialScrollPosition}
                           />
                         );
                       }
