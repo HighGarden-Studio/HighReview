@@ -104,7 +104,7 @@ export function CallStackVisualization({ flowchart, sequence, title, file, onFil
     const observer = new MutationObserver((mutations) => {
       mutations.forEach((mutation) => {
         if (mutation.attributeName === 'class') {
-          const newIsDarkMode = document.documentElement.classList.contains('dark');
+
           // Re-render diagrams when theme changes
           if (flowchart && flowchartRef.current) {
             renderDiagram(flowchart, flowchartRef.current, 'flowchart');

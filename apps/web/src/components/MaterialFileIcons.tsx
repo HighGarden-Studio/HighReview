@@ -675,27 +675,27 @@ export function getMaterialFileIcon(
     const folderName = filename.toLowerCase();
 
     // Special folder icons
-    if (folderName === "src" || folderName === "source") {
-      return isOpen ? (
-        <FolderOpenIcon className="text-blue-500" />
-      ) : (
-        getSrcFolderIcon({})
-      );
-    }
-    if (folderName === "components" || folderName === "component") {
-      return isOpen ? (
-        <FolderOpenIcon className="text-purple-500" />
-      ) : (
-        getComponentsFolderIcon({})
-      );
-    }
-    if (folderName === "node_modules") {
-      return isOpen ? (
-        <FolderOpenIcon className="text-green-500" />
-      ) : (
-        getNodeModulesFolderIcon({})
-      );
-    }
+      if (folderName === "src" || folderName === "source") {
+        return isOpen ? (
+          <FolderOpenIcon className="text-blue-500" />
+        ) : (
+          (getSrcFolderIcon({}) as any)
+        );
+      }
+      if (folderName === "components" || folderName === "component") {
+        return isOpen ? (
+          <FolderOpenIcon className="text-purple-500" />
+        ) : (
+          (getComponentsFolderIcon({}) as any)
+        );
+      }
+      if (folderName === "node_modules") {
+        return isOpen ? (
+          <FolderOpenIcon className="text-green-500" />
+        ) : (
+          (getNodeModulesFolderIcon({}) as any)
+        );
+      }
 
     return isOpen ? <FolderOpenIcon /> : <FolderClosedIcon />;
   }

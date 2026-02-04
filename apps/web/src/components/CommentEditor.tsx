@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
-import { useTheme } from '../contexts/ThemeContext';
+
 
 interface CommentEditorProps {
   value: string;
@@ -29,8 +29,7 @@ export function CommentEditor({
   minHeight = 150,
   originalCode,
 }: CommentEditorProps) {
-  const { theme } = useTheme();
-  const isDarkMode = theme === 'dark';
+
   const [activeTab, setActiveTab] = useState<'write' | 'preview'>('write');
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

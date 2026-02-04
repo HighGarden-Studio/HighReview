@@ -73,6 +73,7 @@ interface EnhancedAIReviewPanelProps {
     data: AIReviewComment | CallStackInfo;
   } | null;
   onHighlightedItemProcessed?: () => void;
+  changedLines?: Record<string, Set<number>>;
 }
 
 export function EnhancedAIReviewPanel({
@@ -84,13 +85,15 @@ export function EnhancedAIReviewPanel({
   onFileSelect,
   highlightedItem,
   onHighlightedItemProcessed,
+  changedLines = {},
 }: EnhancedAIReviewPanelProps) {
+  // Configured with 1-based indexing for consistency
   const [activeTab, setActiveTab] = useState<'issues' | 'intents' | 'callstacks' | 'impact' | 'semantic'>('issues');
+  const [filterPRChanges, setFilterPRChanges] = useState(false);
   const [selectedCallStack, setSelectedCallStack] = useState<{
     callStack: CallStackInfo;
     diagramType: 'flowchart' | 'sequence' | 'both';
   } | null>(null);
-  const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
   const [expandedMovedCodeIndices, setExpandedMovedCodeIndices] = useState<Set<number>>(new Set());
 
   // Handle highlighted item from editor glyph margin clicks
@@ -105,7 +108,6 @@ export function EnhancedAIReviewPanel({
       const issue = highlightedItem.data as AIReviewComment;
       // Generate unique ID for scrolling
       const itemId = `issue-${issue.file}-${issue.line}-${issue.severity}`;
-      setHighlightedItemId(itemId);
 
       // Scroll to item after a short delay (to allow DOM to update)
       setTimeout(() => {
@@ -117,7 +119,6 @@ export function EnhancedAIReviewPanel({
           element.classList.add(highlightClass);
           setTimeout(() => {
             element.classList.remove(highlightClass);
-            setHighlightedItemId(null);
           }, 2000);
         }
       }, 300);
@@ -126,7 +127,6 @@ export function EnhancedAIReviewPanel({
       const callStack = highlightedItem.data as CallStackInfo;
       // Generate unique ID for scrolling
       const itemId = `callstack-${callStack.function}-${callStack.file}`;
-      setHighlightedItemId(itemId);
 
       // Scroll to item after a short delay
       setTimeout(() => {
@@ -137,7 +137,6 @@ export function EnhancedAIReviewPanel({
           element.classList.add('highlight-flash-suggestion');
           setTimeout(() => {
             element.classList.remove('highlight-flash-suggestion');
-            setHighlightedItemId(null);
           }, 2000);
         }
       }, 300);
@@ -216,17 +215,20 @@ export function EnhancedAIReviewPanel({
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
           pre: ({ children }) => <div className="my-4 not-prose">{children}</div>,
-          code({ node, inline, className, children, ...props }) {
+          code({ node, inline, className, children, ...props }: any) {
             const match = /language-(\w+)/.exec(className || '');
+            // ESLint: unused ref
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { ref, ...rest } = props;
             // Only use SyntaxHighlighter for block code with language
             if (!inline && className && match) {
               return (
                 <SyntaxHighlighter
-                  style={vscDarkPlus}
+                  style={vscDarkPlus as any}
                   language={match[1]}
                   PreTag="div"
                   className="rounded-lg !my-2"
-                  {...props}
+                  {...rest}
                 >
                   {String(children).replace(/\n$/, '')}
                 </SyntaxHighlighter>
@@ -235,7 +237,7 @@ export function EnhancedAIReviewPanel({
             // Inline code
             return (
               <code
-                className={`${className} px-1 py-0.5 rounded bg-light-surface dark:bg-dark-surface text-light-accent-primary dark:text-dark-accent-primary font-mono text-xs`}
+                className={`${className} px-1 py-0.5 rounded bg-light-surface dark:bg-dark-surface text-light-accent-primary dark:text-dark-accent-primary font-mono text-xs break-all whitespace-pre-wrap`}
                 {...props}
               >
                 {children}
@@ -248,7 +250,7 @@ export function EnhancedAIReviewPanel({
             });
             const Element = hasCodeBlock ? 'div' : 'p';
             return (
-              <Element className="text-sm text-light-text-secondary dark:text-dark-text-secondary leading-loose mb-4" {...props}>
+              <Element className="text-sm text-light-text-secondary dark:text-dark-text-secondary leading-loose mb-4 break-words" {...props}>
                 {children}
               </Element>
             );
@@ -438,6 +440,24 @@ export function EnhancedAIReviewPanel({
         {/* Summary */}
         {activeTab === 'issues' && (
           <div className="p-4 space-y-4">
+            {/* Filter Toggle */}
+            <div className="flex items-center justify-end">
+              <button
+                onClick={() => setFilterPRChanges(!filterPRChanges)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                  filterPRChanges
+                    ? 'bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary border-light-accent-primary/20 dark:border-dark-accent-primary/20'
+                    : 'bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border-light-border dark:border-dark-border hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+                }`}
+              >
+                <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${
+                  filterPRChanges ? 'border-light-accent-primary dark:border-dark-accent-primary' : 'border-light-text-muted dark:border-dark-text-muted'
+                }`}>
+                  {filterPRChanges && <div className="w-1.5 h-1.5 rounded-full bg-light-accent-primary dark:bg-dark-accent-primary" />}
+                </div>
+                Show only PR changes
+              </button>
+            </div>
             <div className="p-4 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border">
               <h4 className="text-sm font-semibold text-light-text-primary dark:text-dark-text-primary mb-2">
                 Summary
@@ -456,13 +476,18 @@ export function EnhancedAIReviewPanel({
                   </span>
                   Critical Issues ({review.criticalIssues.length})
                 </h4>
-                {review.criticalIssues.map((issue, idx) => (
+                {review.criticalIssues
+                  .filter(issue => !filterPRChanges || (changedLines[issue.file]?.has(issue.line)))
+                  .map((issue, idx) => (
                   <div
                     key={idx}
                     id={`issue-${issue.file}-${issue.line}-${issue.severity}`}
                     className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border-l-4 border-light-accent-error dark:border-dark-accent-error transition-all duration-300"
                   >
                     <div className="flex items-start gap-2 mb-2">
+                      <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border border-light-border dark:border-dark-border" title={`Reference in chat as @issue:${idx + 1}`}>
+                        #{idx + 1}
+                      </span>
                       <span className={`px-2 py-0.5 text-xs font-semibold rounded border ${getSeverityColor(issue.severity)}`}>
                         {issue.severity.toUpperCase()}
                       </span>
@@ -472,7 +497,7 @@ export function EnhancedAIReviewPanel({
                     </div>
                     <button
                       onClick={() => handleFileClick(issue.file, issue.line)}
-                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-words w-full"
+                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-all w-full"
                     >
                       {issue.file}:{issue.line}
                     </button>
@@ -501,39 +526,48 @@ export function EnhancedAIReviewPanel({
                   </span>
                   Warnings ({review.warnings.length})
                 </h4>
-                {review.warnings.map((issue, idx) => (
-                  <div
-                    key={idx}
-                    id={`issue-${issue.file}-${issue.line}-${issue.severity}`}
-                    className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border-l-4 border-light-accent-warning dark:border-dark-accent-warning transition-all duration-300"
-                  >
-                    <div className="flex items-start gap-2 mb-2">
-                      <span className={`px-2 py-0.5 text-xs font-semibold rounded border ${getSeverityColor(issue.severity)}`}>
-                        {issue.severity.toUpperCase()}
-                      </span>
-                      <span className="px-2 py-0.5 text-xs font-medium rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary">
-                        {issue.category}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => handleFileClick(issue.file, issue.line)}
-                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-words w-full"
+                {review.warnings
+                  .filter(issue => !filterPRChanges || (changedLines[issue.file]?.has(issue.line)))
+                  .map((issue, idx) => {
+                  // Offset index by critical issues count
+                  const globalIdx = review.criticalIssues.length + idx;
+                  return (
+                    <div
+                      key={idx}
+                      id={`issue-${issue.file}-${issue.line}-${issue.severity}`}
+                      className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border-l-4 border-light-accent-warning dark:border-dark-accent-warning transition-all duration-300"
                     >
-                      {issue.file}:{issue.line}
-                    </button>
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
-                      {renderMarkdown(issue.message)}
-                    </div>
-                    {issue.suggestion && (
-                      <div className="mt-2 p-2 bg-light-surface dark:bg-dark-surface rounded">
-                        <span className="text-xs font-semibold text-light-text-primary dark:text-dark-text-primary">Suggestion: </span>
-                        <div className="prose prose-sm dark:prose-invert max-w-none mt-1">
-                          {renderMarkdown(issue.suggestion)}
-                        </div>
+                      <div className="flex items-start gap-2 mb-2">
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border border-light-border dark:border-dark-border" title={`Reference in chat as @issue:${globalIdx + 1}`}>
+                          #{globalIdx + 1}
+                        </span>
+                        <span className={`px-2 py-0.5 text-xs font-semibold rounded border ${getSeverityColor(issue.severity)}`}>
+                          {issue.severity.toUpperCase()}
+                        </span>
+                        <span className="px-2 py-0.5 text-xs font-medium rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary">
+                          {issue.category}
+                        </span>
                       </div>
-                    )}
-                  </div>
-                ))}
+                      <button
+                        onClick={() => handleFileClick(issue.file, issue.line)}
+                        className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-all w-full"
+                      >
+                        {issue.file}:{issue.line}
+                      </button>
+                      <div className="prose prose-sm dark:prose-invert max-w-none">
+                        {renderMarkdown(issue.message)}
+                      </div>
+                      {issue.suggestion && (
+                        <div className="mt-2 p-2 bg-light-surface dark:bg-dark-surface rounded">
+                          <span className="text-xs font-semibold text-light-text-primary dark:text-dark-text-primary">Suggestion: </span>
+                          <div className="prose prose-sm dark:prose-invert max-w-none mt-1">
+                            {renderMarkdown(issue.suggestion)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -546,39 +580,76 @@ export function EnhancedAIReviewPanel({
                   </span>
                   Suggestions ({review.suggestions.length})
                 </h4>
-                {review.suggestions.map((issue, idx) => (
-                  <div
-                    key={idx}
-                    id={`issue-${issue.file}-${issue.line}-${issue.severity}`}
-                    className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border-l-4 border-light-accent-primary dark:border-dark-accent-primary transition-all duration-300"
-                  >
-                    <div className="flex items-start gap-2 mb-2">
-                      <span className={`px-2 py-0.5 text-xs font-semibold rounded border ${getSeverityColor(issue.severity)}`}>
-                        {issue.severity.toUpperCase()}
-                      </span>
-                      <span className="px-2 py-0.5 text-xs font-medium rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary">
-                        {issue.category}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => handleFileClick(issue.file, issue.line)}
-                      className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-words w-full"
+                {review.suggestions
+                  .filter(issue => !filterPRChanges || (changedLines[issue.file]?.has(issue.line)))
+                  .map((issue, idx) => {
+                  // Offset index by critical issues and warnings count
+                  const globalIdx = review.criticalIssues.length + review.warnings.length + idx;
+                  return (
+                    <div
+                      key={idx}
+                      id={`issue-${issue.file}-${issue.line}-${issue.severity}`}
+                      className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border-l-4 border-light-accent-primary dark:border-dark-accent-primary transition-all duration-300"
                     >
-                      {issue.file}:{issue.line}
-                    </button>
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
-                      {renderMarkdown(issue.message)}
-                    </div>
-                    {issue.suggestion && (
-                      <div className="mt-2 p-2 bg-light-surface dark:bg-dark-surface rounded">
-                        <span className="text-xs font-semibold text-light-text-primary dark:text-dark-text-primary">Suggestion: </span>
-                        <div className="prose prose-sm dark:prose-invert max-w-none mt-1">
-                          {renderMarkdown(issue.suggestion)}
-                        </div>
+                      <div className="flex items-start gap-2 mb-2">
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border border-light-border dark:border-dark-border" title={`Reference in chat as @issue:${globalIdx + 1}`}>
+                          #{globalIdx + 1}
+                        </span>
+                        <span className={`px-2 py-0.5 text-xs font-semibold rounded border ${getSeverityColor(issue.severity)}`}>
+                          {issue.severity.toUpperCase()}
+                        </span>
+                        <span className="px-2 py-0.5 text-xs font-medium rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary">
+                          {issue.category}
+                        </span>
                       </div>
-                    )}
+                      <button
+                        onClick={() => handleFileClick(issue.file, issue.line)}
+                        className="text-sm font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline mb-2 text-left break-all w-full"
+                      >
+                        {issue.file}:{issue.line}
+                      </button>
+                      <div className="prose prose-sm dark:prose-invert max-w-none">
+                        {renderMarkdown(issue.message)}
+                      </div>
+                      {issue.suggestion && (
+                        <div className="mt-2 p-2 bg-light-surface dark:bg-dark-surface rounded">
+                          <span className="text-xs font-semibold text-light-text-primary dark:text-dark-text-primary">Suggestion: </span>
+                          <div className="prose prose-sm dark:prose-invert max-w-none mt-1">
+                            {renderMarkdown(issue.suggestion)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {/* Review Options */}
+            {metadata?.options && (
+              <div className="mt-6 pt-4 border-t border-light-border dark:border-dark-border">
+                <details className="group">
+                  <summary className="flex items-center gap-2 cursor-pointer list-none text-sm font-semibold text-light-text-secondary dark:text-dark-text-secondary hover:text-light-text-primary dark:hover:text-dark-text-primary transition-colors">
+                    <span className="transition-transform group-open:rotate-90">▶</span>
+                    Review Configuration
+                  </summary>
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm bg-light-surface dark:bg-dark-surface p-3 rounded-lg border border-light-border dark:border-dark-border">
+                    {Object.entries(metadata.options).map(([key, value]) => {
+                      // Skip internal/empty values
+                      if (value === undefined || value === null || value === '') return null;
+                      
+                      return (
+                        <div key={key} className="flex justify-between items-center p-2 rounded hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors">
+                          <span className="text-light-text-secondary dark:text-dark-text-secondary capitalize">
+                            {key.replace(/([A-Z])/g, ' $1').trim()}
+                          </span>
+                          <span className="font-mono text-xs px-2 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated border border-light-border dark:border-dark-border text-light-text-primary dark:text-dark-text-primary">
+                            {String(value)}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                </details>
               </div>
             )}
           </div>
@@ -593,13 +664,16 @@ export function EnhancedAIReviewPanel({
                 className="p-4 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border"
               >
                 <div className="flex flex-wrap items-start gap-2 mb-2">
+                  <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border border-light-border dark:border-dark-border" title={`Reference in chat as @change:${idx + 1}`}>
+                    #{idx + 1}
+                  </span>
                   <span className="px-2 py-0.5 text-xs font-semibold rounded bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary flex-shrink-0">
                     {(intent.level || 'FILE').toUpperCase()}
                   </span>
                   {intent.file && (
                     <button
                       onClick={() => handleFileClick(intent.file!)}
-                      className="text-xs font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline text-left break-words"
+                      className="text-xs font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline text-left break-all w-full"
                     >
                       {intent.file}
                     </button>
@@ -658,16 +732,21 @@ export function EnhancedAIReviewPanel({
                 id={`callstack-${callStack.function}-${callStack.file}`}
                 className="p-4 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border transition-all duration-300"
               >
-                <div className="mb-4">
-                  <h5 className="text-sm font-semibold text-light-text-primary dark:text-dark-text-primary mb-1">
-                    {callStack.function}
-                  </h5>
-                  <button
-                    onClick={() => handleFileClick(callStack.file, undefined, callStack.function)}
-                    className="text-xs font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline text-left break-words w-full"
-                  >
-                    {callStack.file}
-                  </button>
+                <div className="mb-4 flex items-start gap-3">
+                  <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border border-light-border dark:border-dark-border mt-1" title={`Reference in chat as @callstack:${idx + 1}`}>
+                    #{idx + 1}
+                  </span>
+                  <div>
+                    <h5 className="text-sm font-semibold text-light-text-primary dark:text-dark-text-primary mb-1">
+                      {callStack.function}
+                    </h5>
+                    <button
+                      onClick={() => handleFileClick(callStack.file, undefined, callStack.function)}
+                      className="text-xs font-mono text-light-accent-primary dark:text-dark-accent-primary hover:underline text-left break-all w-full"
+                    >
+                      {callStack.file}
+                    </button>
+                  </div>
                 </div>
                 <CallStackVisualization
                   flowchart={callStack.flowchart}
@@ -686,12 +765,17 @@ export function EnhancedAIReviewPanel({
         {activeTab === 'impact' && review.impactAnalysis && (
           <div className="p-4 space-y-4">
             <div className="p-4 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border">
-              <h5 className="text-sm font-semibold text-light-text-primary dark:text-dark-text-primary mb-3 flex items-center gap-2">
-                <span className="w-6 h-6 rounded bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 flex items-center justify-center text-xs">
-                  🎯
+              <div className="flex items-center gap-2 mb-3">
+                <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border border-light-border dark:border-dark-border" title="Reference in chat as @impact:1">
+                  #1
                 </span>
-                Analysis Scope: {review.impactAnalysis.scope}
-              </h5>
+                <h5 className="text-sm font-semibold text-light-text-primary dark:text-dark-text-primary flex items-center gap-2">
+                  <span className="w-6 h-6 rounded bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 flex items-center justify-center text-xs">
+                    🎯
+                  </span>
+                  Analysis Scope: {review.impactAnalysis.scope}
+                </h5>
+              </div>
 
               {review.impactAnalysis.affectedAreas.length > 0 && (
                 <div className="mb-4">
@@ -790,6 +874,11 @@ export function EnhancedAIReviewPanel({
                       key={idx}
                       className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border"
                     >
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border border-light-border dark:border-dark-border" title={`Reference in chat as @semantic:${idx + 1}`}>
+                          #{idx + 1}
+                        </span>
+                      </div>
                       <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
                         {/* From location */}
                         <div className="space-y-1">
@@ -916,6 +1005,9 @@ export function EnhancedAIReviewPanel({
                     className="p-3 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border"
                   >
                     <div className="flex items-start gap-2 mb-2">
+                      <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-light-surface dark:bg-dark-surface text-light-text-secondary dark:text-dark-text-secondary border border-light-border dark:border-dark-border" title={`Reference in chat as @refactor:${idx + 1}`}>
+                        #{idx + 1}
+                      </span>
                       <span className="px-2 py-0.5 text-xs font-semibold rounded bg-light-accent-secondary/10 dark:bg-dark-accent-secondary/10 text-light-accent-secondary dark:text-dark-accent-secondary">
                         {refactor.type}
                       </span>

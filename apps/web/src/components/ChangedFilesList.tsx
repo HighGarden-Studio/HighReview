@@ -28,24 +28,9 @@ export function ChangedFilesList({
 }: ChangedFilesListProps) {
   const [filter, setFilter] = useState<FilterType>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 
-  // Group files by directory
-  const filesByDir = useMemo(() => {
-    const grouped = new Map<string, PRFile[]>();
 
-    files.forEach(file => {
-      const parts = file.path.split('/');
-      const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '/';
 
-      if (!grouped.has(dir)) {
-        grouped.set(dir, []);
-      }
-      grouped.get(dir)!.push(file);
-    });
-
-    return grouped;
-  }, [files]);
 
   // Filter files
   const filteredFiles = useMemo(() => {
@@ -65,15 +50,7 @@ export function ChangedFilesList({
     return filtered;
   }, [files, filter, searchQuery]);
 
-  const toggleDir = (dir: string) => {
-    const newExpanded = new Set(expandedDirs);
-    if (newExpanded.has(dir)) {
-      newExpanded.delete(dir);
-    } else {
-      newExpanded.add(dir);
-    }
-    setExpandedDirs(newExpanded);
-  };
+
 
   const getFileIcon = (filename: string) => {
     const ext = filename.split('.').pop()?.toLowerCase();

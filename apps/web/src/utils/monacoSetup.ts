@@ -5,6 +5,9 @@ import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
 import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
+// Note: Basic language features are already included in monaco-editor
+// No need to explicitly import language contributions
+
 // Configure Monaco Environment for workers (fixes toUrl error)
 (window as any).MonacoEnvironment = {
   getWorker(_: any, label: string) {
@@ -191,15 +194,16 @@ export function configureMonacoTypeScript() {
   }
 
   // Configure TypeScript (only if available - VSCode API may not include it)
-  if (monaco.languages.typescript?.typescriptDefaults) {
-    monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
-      target: monaco.languages.typescript.ScriptTarget.ES2020,
+  const ts = (monaco.languages as any).typescript;
+  if (ts?.typescriptDefaults) {
+    ts.typescriptDefaults.setCompilerOptions({
+      target: ts.ScriptTarget.ES2020,
       allowNonTsExtensions: true,
-      moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
-      module: monaco.languages.typescript.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      module: ts.ModuleKind.ESNext,
       noEmit: true,
       esModuleInterop: true,
-      jsx: monaco.languages.typescript.JsxEmit.React,
+      jsx: ts.JsxEmit.React,
       reactNamespace: 'React',
       allowJs: true,
       typeRoots: ['node_modules/@types'],
@@ -207,27 +211,27 @@ export function configureMonacoTypeScript() {
     });
 
     // Set diagnostics options
-    monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+    ts.typescriptDefaults.setDiagnosticsOptions({
       noSemanticValidation: false,
       noSyntaxValidation: false,
     });
   }
 
-  if (monaco.languages.typescript?.javascriptDefaults) {
-    monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
-      target: monaco.languages.typescript.ScriptTarget.ES2020,
+  if (ts?.javascriptDefaults) {
+    ts.javascriptDefaults.setCompilerOptions({
+      target: ts.ScriptTarget.ES2020,
       allowNonTsExtensions: true,
-      moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
-      module: monaco.languages.typescript.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      module: ts.ModuleKind.ESNext,
       noEmit: true,
       esModuleInterop: true,
-      jsx: monaco.languages.typescript.JsxEmit.React,
+      jsx: ts.JsxEmit.React,
       reactNamespace: 'React',
       allowJs: true,
       skipLibCheck: true,
     });
 
-    monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+    ts.javascriptDefaults.setDiagnosticsOptions({
       noSemanticValidation: false,
       noSyntaxValidation: false,
     });
@@ -336,43 +340,33 @@ export async function loadPRFilesIntoMonaco(
 
   const loadPromises = files.map(async (file) => {
     try {
-      // Fetch both versions of the file
-      const [originalResponse, modifiedResponse] = await Promise.all([
-        fetch(
+        // Fetch diff which contains both original and modified content
+        const response = await fetch(
           `/api/fs/diff?${new URLSearchParams({
             worktreePath,
             filePath: file.path,
             baseBranch,
             repoRoot,
           })}`
-        ),
-        fetch(
-          `/api/fs/read?${new URLSearchParams({
-            worktreePath,
-            filePath: file.path,
-          })}`
-        ),
-      ]);
+        );
 
-      if (originalResponse.ok) {
-        const diffData = await originalResponse.json();
-        if (diffData.original) {
-          // Create standard Monaco model (LSP disabled)
-          createOrUpdateModel(`${file.path}.base`, diffData.original, worktreePath);
-        }
-      }
+        if (response.ok) {
+          const diffData = await response.json();
+          
+          if (diffData.original) {
+            // Create standard Monaco model for base version
+            createOrUpdateModel(`${file.path}.base`, diffData.original, worktreePath);
+          }
 
-      if (modifiedResponse.ok) {
-        const fileData = await modifiedResponse.json();
-        if (fileData.content) {
-          // Create standard Monaco model (LSP disabled)
-          createOrUpdateModel(file.path, fileData.content, worktreePath);
+          if (diffData.modified) {
+            // Create standard Monaco model for current version
+            createOrUpdateModel(file.path, diffData.modified, worktreePath);
+          }
         }
+      } catch (error) {
+        console.warn(`[MonacoSetup] Failed to load file ${file.path}:`, error);
       }
-    } catch (error) {
-      console.warn(`[MonacoSetup] Failed to load file ${file.path}:`, error);
-    }
-  });
+    });
 
   await Promise.allSettled(loadPromises);
 }
@@ -406,7 +400,7 @@ function filterFilesByExtension(files: string[], extensions: string[]): string[]
 // Tree-sitter approach doesn't require full project indexing
 export async function loadFullProjectIntoMonaco(
   worktreePath: string,
-  repoRoot: string,
+  _repoRoot: string,
   onProgress?: (current: number, total: number, currentFile: string) => void,
   extensions = [
     '.java', '.kt', '.kts',
@@ -542,3 +536,37 @@ export function disposeAllModels() {
     model.dispose();
   });
 }
+
+// Define custom themes to match app styling
+export function defineMonacoThemes() {
+  monaco.editor.defineTheme('highreview-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [],
+    colors: {
+      'editor.background': '#1e1e1e',
+      'editor.foreground': '#d4d4d4',
+      'editor.lineHighlightBackground': '#2f3136',
+      'editorLineNumber.foreground': '#858585',
+      'editorGutter.background': '#1e1e1e',
+      'diffEditor.insertedTextBackground': '#28a74533',
+      'diffEditor.removedTextBackground': '#dc354533',
+    }
+  });
+
+  monaco.editor.defineTheme('highreview-light', {
+    base: 'vs',
+    inherit: true,
+    rules: [],
+    colors: {
+      'editor.background': '#ffffff',
+      'editor.foreground': '#333333',
+      'editor.lineHighlightBackground': '#f3f3f3',
+      'editorLineNumber.foreground': '#237893',
+      'editorGutter.background': '#ffffff',
+      'diffEditor.insertedTextBackground': '#28a74533',
+      'diffEditor.removedTextBackground': '#dc354533',
+    }
+  });
+}
+

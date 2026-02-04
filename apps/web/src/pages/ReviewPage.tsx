@@ -12,22 +12,17 @@ import { ThemeToggle } from '../components/ThemeToggle';
 import { LanguageSelector } from '../components/LanguageSelector';
 import { EnhancedAIReviewPanel } from '../components/EnhancedAIReviewPanel';
 import { PRCommentThread } from '../components/PRCommentThread';
-import { ChangedFilesList } from '../components/ChangedFilesList';
 import { ReviewSubmissionModal } from '../components/ReviewSubmissionModal';
 import { CodeNavigationModal } from '../components/CodeNavigationModal';
 import { SearchResultsModal } from '../components/SearchResultsModal';
-import { IndexingProgress } from '../components/IndexingProgress';
 import { usePendingReview } from '../hooks/usePendingReview';
 import { useTheme } from '../contexts/ThemeContext';
 import { useLanguage } from '../contexts/LanguageContext';
-// DISABLED: import { initializeMonacoServices, startLanguageClient, stopLanguageClient } from '../utils/lsp';
 import { registerIndexedProvider, disposeIndexedProvider } from '../utils/indexedLanguageProvider';
 import { loadPRFilesIntoMonaco } from '../utils/monacoSetup';
 import { detectFunctionLines } from '../utils/aiReviewDecorations';
-import { hasValidIndexingCache, getIndexingCache, saveIndexingCache, clearExpiredCaches } from '../utils/indexingCache';
-import * as monaco from 'monaco-editor';
 
-interface PRFile {
+export interface PRFile {
   path: string;
   filename: string;
   status: 'added' | 'modified' | 'removed' | 'renamed';
@@ -44,6 +39,9 @@ interface ReviewPageProps {
   initialFilePath?: string;
   commentInfo?: any;
   aiReviewOptions?: any;
+  owner: string;
+  repo: string;
+  prNumber: string;
 }
 
 interface AIReviewComment {
@@ -111,6 +109,9 @@ export function ReviewPage({
   initialFilePath,
   commentInfo,
   aiReviewOptions,
+  owner,
+  repo,
+  prNumber,
 }: ReviewPageProps) {
   const { theme } = useTheme();
   const { language } = useLanguage();
@@ -121,11 +122,9 @@ export function ReviewPage({
     return saved !== null ? saved === 'true' : true;
   });
   const [sessionId] = useState(() => `session-${Date.now()}`);
-  const [showAIReview, setShowAIReview] = useState(true); // Always show AI Review panel
   const [aiReviewData, setAIReviewData] = useState<AIReviewResult | null>(null);
   const [aiReviewLoading, setAIReviewLoading] = useState(true); // Start with loading=true to show modal immediately
   const [aiReviewStep, setAIReviewStep] = useState<AIReviewStep>('cloning'); // Start with cloning
-  const [indexingProgress, setIndexingProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
 
   // AbortController for cancelling AI review
   const aiReviewAbortController = useRef<AbortController | null>(null);
@@ -151,7 +150,6 @@ export function ReviewPage({
     isOutdated: boolean;
   } | null>(null);
   const [showReviewModal, setShowReviewModal] = useState(false);
-  const [showIndexingProgress, setShowIndexingProgress] = useState(false);
   const [fileFilterMode, setFileFilterMode] = useState<'all' | 'changed'>('all');
   const [highlightLine, setHighlightLine] = useState<number | undefined>(undefined);
   const [highlightColumn, setHighlightColumn] = useState<number | undefined>(undefined);
@@ -171,7 +169,6 @@ export function ReviewPage({
     data: AIReviewComment | CallStackInfo;
   } | null>(null);
   const [prComments, setPRComments] = useState<any[]>([]);
-  const [prCommentsLoading, setPRCommentsLoading] = useState(false);
   const [activeCommentThread, setActiveCommentThread] = useState<any | null>(null);
   const [searchModal, setSearchModal] = useState<{
     show: boolean;
@@ -208,7 +205,7 @@ export function ReviewPage({
   });
 
   // Fetch file tree
-  const { data: treeData, isLoading: treeLoading, error: treeError } = useQuery({
+  const { data: treeData, isLoading: treeLoading } = useQuery({
     queryKey: ['fileTree', worktreePath],
     queryFn: async () => {
       const response = await fetch(`/api/fs/tree?path=${encodeURIComponent(worktreePath)}&maxDepth=20`);
@@ -226,81 +223,28 @@ export function ReviewPage({
   const {
     comments: pendingComments,
     addComment,
-    updateComment,
-    removeComment,
-    clearAll,
     submitReview,
     isSubmitting,
-    submitError,
   } = usePendingReview(
-    prInfo?.owner || '',
-    prInfo?.repo || '',
-    parseInt(prInfo?.prNumber || '0')
+    owner,
+    repo,
+    parseInt(prNumber || '0')
   );
 
   // Calculate effective repo root for Monaco model URIs
   const effectiveRepoRoot = repoRoot || worktreePath;
 
-  // LSP workspace root should be worktree (where actual source code is checked out)
-  // NOT the bare repo root, because LSP needs to read actual files
-  const lspWorkspaceRoot = worktreePath;
-
   // Initialize Monaco services and indexed provider on mount
   useEffect(() => {
-    // DISABLED LSP: initializeMonacoServices();
-
-    // DON'T start LSP client here - wait for prData to load so we can filter by project languages
-    // This prevents connecting to unnecessary language servers
-
     // Register indexed language provider
-    const provider = registerIndexedProvider(worktreePath);
-
-    // Check if repository needs indexing
-    const checkIndexingStatus = async () => {
-      try {
-        const statusResponse = await fetch(`/api/indexing/status?repoPath=${encodeURIComponent(worktreePath)}`);
-        if (statusResponse.ok) {
-          const statusData = await statusResponse.json();
-          if (statusData.stats.totalSymbols > 0) {
-            return;
-          }
-        }
-
-        // Repository needs indexing, show progress UI
-        setShowIndexingProgress(true);
-      } catch (error) {
-        console.error('[ReviewPage] Failed to check indexing status:', error);
-      }
-    };
-
-    checkIndexingStatus();
+    registerIndexedProvider(worktreePath);
 
     return () => {
-      // DISABLED LSP:       stopLanguageClient();
       disposeIndexedProvider();
     };
-  }, [effectiveRepoRoot, worktreePath]);
+  }, [worktreePath]);
 
-  // Start LSP when PR data loads with repository languages
-  useEffect(() => {
-    if (prData?.languages) {
-      //       console.log('[ReviewPage] Starting LSP with repository languages:', Object.keys(prData.languages).join(', '));
 
-      // Start LSP with language filtering
-      // IMPORTANT: Use lspWorkspaceRoot (worktree path) where actual source code is
-      // DISABLED LSP:
-      // startLanguageClient(lspWorkspaceRoot, prData.languages).catch((error) => {
-      //   console.error('[LSP] Failed to start language client with languages:', error);
-      // });
-    } else if (prData && !prData.languages) {
-      // PR data loaded but no languages info, start TypeScript by default
-      //       console.log('[ReviewPage] No language info in PR data, starting TypeScript only');
-      // DISABLED LSP:
-      // startLanguageClient(lspWorkspaceRoot, { 'TypeScript': 1 }).catch((error) => {
-      //   console.error('[LSP] Failed to start language client:', error);
-      // });
-    }
-  }, [prData, effectiveRepoRoot]);
 
   // Save panel sizes to localStorage when they change
   useEffect(() => {
@@ -321,20 +265,7 @@ export function ReviewPage({
   }, [showChat]);
 
   // Map AI review comments to files
-  const aiCommentsMap = useMemo(() => {
-    const map = new Map<string, number>();
-    if (aiReviewData) {
-      const allComments = [
-        ...aiReviewData.criticalIssues,
-        ...aiReviewData.warnings,
-        ...aiReviewData.suggestions,
-      ];
-      allComments.forEach(comment => {
-        map.set(comment.file, (map.get(comment.file) || 0) + 1);
-      });
-    }
-    return map;
-  }, [aiReviewData]);
+
 
   // Get all AI review issues (for passing to editors)
   const aiReviewIssues = useMemo(() => {
@@ -363,8 +294,8 @@ export function ReviewPage({
 
   // Create Set of changed file paths from PR data
   const changedFilesSet = useMemo(() => {
-    if (!prData?.files) return undefined;
-    const set = new Set(prData.files.map(f => f.path));
+    if (!prData?.files) return undefined as Set<string> | undefined;
+    const set = new Set<string>(prData.files.map((f: any) => f.path));
     return set;
   }, [prData]);
 
@@ -385,22 +316,21 @@ export function ReviewPage({
     });
 
     const map = new Map();
-    prData.files.forEach(file => {
+    prData.files.forEach((file: any) => {
       map.set(file.path, {
         additions: file.additions || 0,
         deletions: file.deletions || 0,
         status: file.status,
-        commentCount: commentCountByFile.get(file.path) || 0,
       });
     });
     return map;
   }, [prData, prComments]);
 
-  // Load all PR files into Monaco for better code navigation
   useEffect(() => {
     if (prData?.files && worktreePath && baseBranch && repoRoot) {
+      const filesToLoad = prData.files.filter((f: any) => !f.filename.startsWith('.highreview'));
       loadPRFilesIntoMonaco(
-        prData.files,
+        filesToLoad,
         repoRoot,
         worktreePath,
         baseBranch
@@ -486,8 +416,8 @@ export function ReviewPage({
       const params = new URLSearchParams({
         worktreePath,
         filePath: selectedFile.path,
-        baseBranch,
-        repoRoot: effectiveRepoRoot,
+        baseBranch: baseBranch,
+        repoRoot: effectiveRepoRoot || '',
       });
 
       // Add GitHub PR info for fallback
@@ -518,7 +448,7 @@ export function ReviewPage({
     },
     enabled: !!selectedFile && !!isPRFile, // Only fetch for PR files
     staleTime: 0, // Always fetch fresh data
-    cacheTime: 0, // Don't cache
+    gcTime: 0, // Don't cache
   });
 
   const handleFileClick = (node: FileNode) => {
@@ -545,10 +475,7 @@ export function ReviewPage({
 
   const monacoTheme = theme === 'dark' ? 'vs-dark' : 'vs-light';
 
-  const codeContext = selectedFile && contentData ? {
-    filePath: selectedFile.path,
-    fileContent: contentData.content,
-  } : undefined;
+
 
   // Perform AI review on mount if PR info is available
   useEffect(() => {
@@ -642,7 +569,6 @@ export function ReviewPage({
         if (abortController.signal.aborted) return;
         
         setAIReviewData(result.review);
-        setShowAIReview(true);
 
         // Set metadata
         setAIReviewMetadata({
@@ -659,9 +585,8 @@ export function ReviewPage({
         console.error('[AI Review] Failed to perform AI review:', error);
         const errorMessage = error?.message || 'Unknown error occurred';
 
-        // Check if it was cancelled
         if (error?.name === 'AbortError' || errorMessage.includes('cancelled') || errorMessage.includes('aborted')) {
-          toast.info('AI Review cancelled', { duration: 3000 });
+          toast('AI Review cancelled', { duration: 3000 });
         } else if (errorMessage.includes('timed out') || errorMessage.includes('timeout')) {
           // Show different messages for timeout errors
           toast.error(
@@ -756,8 +681,6 @@ export function ReviewPage({
         return;
       }
 
-      setPRCommentsLoading(true);
-
       try {
         const response = await fetch(
           `/api/prs/${prInfo.owner}/${prInfo.repo}/${prInfo.prNumber}/conversation`
@@ -776,28 +699,14 @@ export function ReviewPage({
       } catch (error) {
         console.error('[PR Comments] Error fetching comments:', error);
       } finally {
-        setPRCommentsLoading(false);
+        // prCommentsLoading handled by hook or not needed here
       }
     };
 
     fetchPRComments();
   }, [prInfo]);
 
-  // Helper function to extract line numbers from diffHunk (same as PRDetailPage)
-  const extractLineNumbers = (diffHunk: string): { startLine: number; endLine: number } | null => {
-    if (!diffHunk) return null;
 
-    // Parse the diff header like "@@ -44,4 +44,12 @@" or "@@ -44 +44,12 @@"
-    // The format is: @@ -oldStart,oldLines +newStart,newLines @@
-    const headerMatch = diffHunk.match(/@@ -\d+,?\d* \+(\d+)(?:,(\d+))? @@/);
-    if (!headerMatch) return null;
-
-    const startLine = parseInt(headerMatch[1], 10);
-    const lineCount = headerMatch[2] ? parseInt(headerMatch[2], 10) : 1;
-    const endLine = startLine + lineCount - 1;
-
-    return { startLine, endLine };
-  };
 
   // Helper function to process and organize comments
   const processComments = (data: any) => {
@@ -807,7 +716,7 @@ export function ReviewPage({
     // Process review threads (these have file:line associations and full thread info)
     // This is the primary source of PR comments as it includes all thread information
     if (data.reviewThreads) {
-      data.reviewThreads.forEach((thread: any, index: number) => {
+      data.reviewThreads.forEach((thread: any) => {
         // GraphQL returns comments as { nodes: [...] }
         const threadComments = thread.comments?.nodes || [];
 
@@ -988,38 +897,13 @@ export function ReviewPage({
     }
   };
 
-  const handleAICommentClick = (comment: AIReviewComment) => {
-    // Find and select the file in the tree
-    if (treeData?.tree) {
-      const findFileInTree = (nodes: FileNode[], path: string): FileNode | null => {
-        for (const node of nodes) {
-          if (node.path === path && node.type === 'file') {
-            return node;
-          }
-          if (node.type === 'directory' && node.children) {
-            const found = findFileInTree(node.children, path);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
 
-      const fileNode = findFileInTree(treeData.tree, comment.file);
-      if (fileNode) {
-        setSelectedFile(fileNode);
-        // TODO: Scroll to line number when CodeEditor supports it
-      }
-    }
-  };
 
   // Handler for AI review decoration clicks from editor glyph margin
   const handleAIReviewDecorationClick = useCallback((decoration: import('../utils/aiReviewDecorations').AIReviewDecoration) => {
 
     // Open AI Review panel if not already open
-    setShowAIReview(prev => {
-      if (!prev) return true;
-      return prev;
-    });
+    // setShowAIReview(true); // Always true anyway
 
     // Set highlighted item
     setHighlightedAIReview({
@@ -1274,9 +1158,7 @@ export function ReviewPage({
   }, [selectedFile, addComment]);
 
   // PR Comment handlers
-  const handlePRCommentClick = useCallback((commentThread: any) => {
-    setActiveCommentThread(commentThread);
-  }, []);
+
 
   const handleReply = useCallback(async (threadId: string, body: string) => {
     if (!prInfo?.owner || !prInfo?.repo || !prInfo?.prNumber) return;
@@ -2247,7 +2129,6 @@ export function ReviewPage({
                     <AIProgressIndicator
                       isActive={aiReviewLoading}
                       currentStep={aiReviewStep}
-                      indexingProgress={indexingProgress}
                       onComplete={() => {
                       }}
                     />
@@ -2319,7 +2200,7 @@ export function ReviewPage({
                   description: prData.pullRequest.body || '',
                 } : undefined}
                 aiReviewData={aiReviewData}
-                changedFiles={prData?.files ? prData.files.map(f => f.path) : undefined}
+                changedFiles={prData?.files ? prData.files.map((f: any) => f.path) : undefined}
               />
             </Allotment.Pane>
           </Allotment>
@@ -2353,7 +2234,7 @@ export function ReviewPage({
           currentUser={prData?.pullRequest?.author?.login}
           onReply={handleReply}
           onReact={handleReact}
-          onResolve={async (threadId: string) => {
+          onResolve={async (_threadId: string) => {
             try {
               // TODO: Implement resolve functionality
               toast.success('Thread resolved');
@@ -2367,20 +2248,7 @@ export function ReviewPage({
         />
       )}
 
-      {/* Indexing Progress Indicator */}
-      {showIndexingProgress && (
-        <IndexingProgress
-          repoPath={worktreePath}
-          onComplete={(stats) => {
-            setShowIndexingProgress(false);
-          }}
-          onError={(error) => {
-            console.error('[ReviewPage] Indexing failed:', error);
-            setShowIndexingProgress(false);
-            toast.error(`Indexing failed: ${error}`);
-          }}
-        />
-      )}
+
 
       {/* Search Results Modal */}
       <SearchResultsModal

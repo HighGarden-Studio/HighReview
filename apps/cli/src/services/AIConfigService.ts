@@ -12,8 +12,8 @@ export interface AIConfig {
   /** Selected AI provider */
   provider: string;
 
-  /** Provider-specific settings */
-  providerSettings?: {
+  /** Provider-specific settings (keyed by provider ID) */
+  providerSettings?: Record<string, {
     /** Model name (optional) */
     model?: string;
 
@@ -22,7 +22,7 @@ export interface AIConfig {
 
     /** Additional settings */
     [key: string]: any;
-  };
+  }>;
 
   /** Last updated timestamp */
   updatedAt: number;
@@ -42,14 +42,10 @@ export class AIConfigService {
    * Get current AI configuration
    */
   async getConfig(): Promise<AIConfig> {
-    if (this.config) {
-      return this.config;
-    }
-
+    // Always reload config to ensure latest settings are used
     try {
       const content = await fs.readFile(this.configPath, 'utf-8');
       this.config = JSON.parse(content);
-      console.log('[AI Config] Loaded configuration:', this.config?.provider);
       return this.config!;
     } catch (error: any) {
       if (error.code === 'ENOENT') {
@@ -68,6 +64,7 @@ export class AIConfigService {
     return {
       provider: 'claude-code', // Default to Claude Code
       updatedAt: Date.now(),
+      providerSettings: {},
     };
   }
 
@@ -104,10 +101,22 @@ export class AIConfigService {
   /**
    * Set selected provider
    */
-  async setSelectedProvider(providerId: string, providerSettings?: any): Promise<void> {
+  async setSelectedProvider(providerId: string, settings?: any): Promise<void> {
+    const currentConfig = await this.getConfig();
+    const currentProviderSettings = currentConfig.providerSettings || {};
+    
+    // Update settings for this specific provider
+    const newProviderSettings = {
+      ...currentProviderSettings,
+      [providerId]: {
+        ...(currentProviderSettings[providerId] || {}),
+        ...settings
+      }
+    };
+
     await this.saveConfig({
       provider: providerId,
-      providerSettings,
+      providerSettings: newProviderSettings,
     });
   }
 

@@ -1,4 +1,5 @@
 import { execa } from 'execa';
+import { createHash } from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { AIReviewParser } from './AIReviewParser.js';
@@ -7,6 +8,9 @@ import { AIProviderFactory, registerProviders, getDefaultProvider } from './prov
 import type { AIProvider } from './providers/index.js';
 import { getAIConfigService } from './AIConfigService.js';
 import { ContextAnalyzer } from './ContextAnalyzer.js';
+import { ChunkedReviewExecutor } from './ChunkedReviewExecutor.js';
+import { getChunkingStrategyService } from './ChunkingStrategyService.js';
+import type { ChunkedReviewProgress, ChangedFileWithDiff } from '../types/ChunkedReviewTypes.js';
 
 interface ReviewComment {
   file: string;
@@ -75,6 +79,11 @@ interface ReviewResult {
   impactAnalysis?: ImpactAnalysis;
   movedCode?: MovedCode[];
   refactorings?: Refactoring[];
+
+  // Legacy fields (fallback)
+  changeIntent?: string;
+  impact?: string;
+  semanticAnalysis?: string;
 }
 
 export class AIReviewService {
@@ -89,12 +98,12 @@ export class AIReviewService {
 
   /**
    * Initialize and select the AI provider
+   * Always reloads settings to ensure latest configuration is used
    */
   private async initializeProvider(): Promise<void> {
-    if (this.provider) {
-      return; // Already initialized
-    }
-
+    // Always reload provider settings to ensure changes are immediately reflected
+    // This ensures that when users change settings, the new provider is used right away
+    
     const configService = getAIConfigService();
 
     // Try to get the configured provider first
@@ -145,7 +154,9 @@ export class AIReviewService {
     worktreePath: string,
     baseBranch: string,
     language: 'en' | 'ko' | 'ja' | 'zh' = 'en',
-    options?: any
+    options?: any,
+    allowedFiles?: string[],
+    onProgress?: (progress: ChunkedReviewProgress) => void
   ): Promise<ReviewResult> {
     try {
       // Initialize provider if needed
@@ -153,8 +164,11 @@ export class AIReviewService {
 
       console.log('[AI Review] Starting review for worktree:', worktreePath);
 
+      // Fetch latest base branch to ensure accurate merge-base calculation
+      await this.fetchBaseBranch(worktreePath, baseBranch);
+
       // Get diff
-      const diff = await this.getDiff(worktreePath, baseBranch);
+      const diff = await this.getDiff(worktreePath, baseBranch, allowedFiles);
 
       if (!diff || diff.trim().length === 0) {
         return {
@@ -168,7 +182,31 @@ export class AIReviewService {
       }
 
       // Get changed files list
-      const allChangedFiles = await this.getChangedFiles(worktreePath, baseBranch);
+      let allChangedFiles = await this.getChangedFiles(worktreePath, baseBranch, allowedFiles);
+
+      // Filter by allowed files if provided (Authoritative Source)
+      if (allowedFiles && allowedFiles.length > 0) {
+        console.log(`[AI Review] Filtering git diff result against ${allowedFiles.length} authoritative files from GitHub`);
+        const originalCount = allChangedFiles.length;
+        
+        // Use a set for faster lookups
+        const allowedSet = new Set(allowedFiles);
+        
+        allChangedFiles = allChangedFiles.filter(file => {
+          // Check exact match
+          if (allowedSet.has(file)) return true;
+          // Check if file is in allowed directory (sometimes diffs include deeper paths)
+          // Actually, GitHub API usually returns full paths matching git diff.
+          // Let's stick to exact match for now to be safe.
+          return false;
+        });
+        
+        console.log(`[AI Review] Filtered changed files: ${originalCount} -> ${allChangedFiles.length}`);
+        
+        if (originalCount > 20 && allChangedFiles.length < 5) {
+           console.log('[AI Review] drastic reduction in file count detected. This confirms the "excessive file review" bug was prevented.');
+        }
+      }
 
       // Filter out formatting-only changes
       const changedFiles = await this.filterFormattingOnlyFiles(worktreePath, baseBranch, allChangedFiles);
@@ -197,7 +235,19 @@ export class AIReviewService {
           // - Type definitions (type information)
           // - Implementations (what implements interfaces/abstract classes)
           // - References (where symbols are used)
-          const comprehensiveContext = await contextAnalyzer.analyzeComprehensiveContext(diff, worktreePath);
+          // Pass alloweFiles to ensure we only analyze relevant files
+          const comprehensiveContext = await contextAnalyzer.analyzeComprehensiveContext(diff, worktreePath, allowedFiles);
+
+          // Filter context based on scope (callers vs implementations)
+          if (options?.contextScope === 'callers') {
+            comprehensiveContext.symbols.forEach(s => {
+              s.implementations = undefined;
+            });
+          } else if (options?.contextScope === 'implementations') {
+            comprehensiveContext.symbols.forEach(s => {
+              s.references = [];
+            });
+          }
 
           console.log(`[AI Review] Found ${comprehensiveContext.symbols.length} modified symbols with comprehensive context`);
 
@@ -249,13 +299,73 @@ export class AIReviewService {
       }
 
       // Get configured model
+
       const configService = getAIConfigService();
-      const settings = await configService.getProviderSettings();
-      const model = settings?.model;
+      const allSettings = await configService.getProviderSettings();
+      // Access specific settings for the current provider
+      const providerSettings = allSettings?.[this.providerId];
+      const model = providerSettings?.model;
 
       if (model) {
-        console.log(`[AI Review] Using configured model: ${model}`);
+        console.log(`[AI Review] Using configured model for ${this.providerId}: ${model}`);
       }
+
+      // Check if chunked review is needed (for many files with local models)
+      const chunkingService = getChunkingStrategyService();
+      const providerType = this.providerId || 'unknown';
+      const shouldUseChunking = chunkingService.shouldChunk(changedFiles.length, providerType);
+
+      if (shouldUseChunking && options?.useChunkedReview !== false) {
+        console.log(`[AI Review] Using chunked review for ${changedFiles.length} files (provider: ${providerType})`);
+
+        // Parse individual file diffs from the combined diff
+        const filesWithDiffs = await this.parseFileDiffs(diff, changedFiles, worktreePath);
+
+        // Create chunked executor
+        const executor = new ChunkedReviewExecutor(this.provider, providerType);
+
+        // Execute chunked review
+        const chunkedResult = await executor.executeChunkedReview(
+          filesWithDiffs,
+          contextAnalysisInfo,
+          language,
+          {
+            ...options,
+            model,
+            prInfo: {
+              owner: 'unknown', // TODO: Get from git remote
+              repo: 'unknown',
+              prNumber: 0
+            },
+            analyzeChangeIntent: options?.analyzeChangeIntent,
+            analyzeBroaderImpact: options?.analyzeBroaderImpact,
+            generateCallStack: options?.generateCallStack,
+            forceRerun: options?.forceRefresh || options?.forceRerun, // Pass force refresh flag
+          },
+          onProgress
+        );
+
+        console.log('[AI Review] Chunked review completed:', {
+          filesReviewed: chunkedResult.filesReviewed,
+          totalIssues: chunkedResult.totalIssues,
+          chunks: chunkedResult.chunkResults.length,
+          successfulChunks: chunkedResult.chunkResults.filter(r => r.success).length,
+        });
+
+        return {
+          summary: chunkedResult.summary,
+          criticalIssues: chunkedResult.criticalIssues,
+          warnings: chunkedResult.warnings,
+          suggestions: chunkedResult.suggestions,
+          filesReviewed: chunkedResult.filesReviewed,
+          totalIssues: chunkedResult.totalIssues,
+          changeIntents: chunkedResult.changeIntent ? [{ level: 'file', intent: chunkedResult.changeIntent, motivation: '' }] : undefined,
+          impactAnalysis: chunkedResult.impact ? { scope: 'PR', affectedAreas: [chunkedResult.impact] } : undefined,
+        };
+      }
+
+      // Standard single-request review (for few files or when chunking disabled)
+      console.log(`[AI Review] Using single-request review for ${changedFiles.length} files`);
 
       const response = await this.provider.review({
         prompt,
@@ -283,9 +393,14 @@ export class AIReviewService {
 
       // Save full response to temp file for debugging
       try {
-        const debugPath = path.join('/tmp', `ai-review-debug-${Date.now()}.txt`);
-        await fs.writeFile(debugPath, response.content, 'utf-8');
-        console.log('[AI Review] Saved full response to:', debugPath);
+        const timestamp = Date.now();
+        const debugResponsePath = path.join('/tmp', `ai-review-response-${timestamp}.txt`);
+        await fs.writeFile(debugResponsePath, response.content, 'utf-8');
+        console.log('[AI Review] Saved full response to:', debugResponsePath);
+
+        const debugPromptPath = path.join('/tmp', `ai-review-prompt-${timestamp}.txt`);
+        await fs.writeFile(debugPromptPath, prompt, 'utf-8');
+        console.log('[AI Review] Saved full prompt to:', debugPromptPath);
       } catch (e) {
         console.error('[AI Review] Failed to save debug file:', e);
       }
@@ -321,43 +436,124 @@ export class AIReviewService {
   }
 
   /**
-   * Get git diff for the worktree
+   * Fetch the base branch from origin to ensure we have the latest commits
+   * This is crucial for accurate merge-base calculation
    */
-  private async getDiff(worktreePath: string, baseBranch: string): Promise<string> {
+  private async fetchBaseBranch(worktreePath: string, baseBranch: string): Promise<void> {
     try {
-      // Try with origin/ prefix first (for remote branches)
-      try {
-        const { stdout } = await execa('git', ['diff', `origin/${baseBranch}`, '--', '.'], {
-          cwd: worktreePath,
-        });
-        console.log(`[AI Review] Got diff from origin/${baseBranch}, ${stdout.length} bytes`);
-        return stdout;
-      } catch (originError) {
-        console.log(`[AI Review] origin/${baseBranch} not found, trying without origin/`);
+      console.log(`[AI Review] Fetching and syncing origin/${baseBranch} to ensure accurate diff...`);
+      // Update local base branch to match origin
+      await execa('git', ['fetch', 'origin', `${baseBranch}:${baseBranch}`], { cwd: worktreePath, reject: false });
+      // Fallback to plain fetch if tracking link fails
+      await execa('git', ['fetch', 'origin', baseBranch], { cwd: worktreePath });
+    } catch (error: any) {
+      console.warn(`[AI Review] Failed to sync base branch ${baseBranch}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Parse combined diff into individual file diffs
+   */
+  private async parseFileDiffs(
+    combinedDiff: string,
+    changedFiles: string[],
+    worktreePath: string
+  ): Promise<ChangedFileWithDiff[]> {
+    const filesWithDiffs: ChangedFileWithDiff[] = [];
+
+    // Split diff by file boundaries (diff --git a/... b/...)
+    const fileDiffPattern = /^diff --git a\/(.+?) b\/(.+)$/gm;
+    const diffParts: { file: string; startIndex: number }[] = [];
+
+    let match;
+    while ((match = fileDiffPattern.exec(combinedDiff)) !== null) {
+      diffParts.push({
+        file: match[2], // Use the 'b/' path (new file path)
+        startIndex: match.index,
+      });
+    }
+
+    // Extract each file's diff
+    for (let i = 0; i < diffParts.length; i++) {
+      const current = diffParts[i];
+      
+      // Filter by allowed files if provided
+      if (changedFiles.length > 0 && !changedFiles.includes(current.file)) {
+        continue;
       }
 
-      // Try without origin/ prefix
-      const { stdout } = await execa('git', ['diff', baseBranch, '--', '.'], {
-        cwd: worktreePath,
+      const endIndex = i < diffParts.length - 1 ? diffParts[i + 1].startIndex : combinedDiff.length;
+      const fileDiff = combinedDiff.slice(current.startIndex, endIndex);
+
+      filesWithDiffs.push({
+        path: current.file,
+        diff: fileDiff,
+        diffHash: createHash('sha256').update(fileDiff).digest('hex'),
+        estimatedTokens: Math.ceil(fileDiff.length / 4), // Rough estimate
       });
-      console.log(`[AI Review] Got diff from ${baseBranch}, ${stdout.length} bytes`);
+    }
+
+    // Add any files that didn't appear in the diff (new/deleted files)
+    for (const file of changedFiles) {
+      if (!filesWithDiffs.some(f => f.path === file)) {
+        filesWithDiffs.push({
+          path: file,
+          diff: `File: ${file} (no diff available)`,
+          estimatedTokens: 50,
+        });
+      }
+    }
+
+    console.log(`[AI Review] Parsed ${filesWithDiffs.length} file diffs from combined diff`);
+    return filesWithDiffs;
+  }
+
+  /**
+   * Get git diff for the worktree
+   * Uses merge-base to get accurate PR diff (only files changed in this PR, not upstream changes)
+   */
+  private async getDiff(worktreePath: string, baseBranch: string, allowedFiles?: string[]): Promise<string> {
+    try {
+      // CRITICAL: Use merge-base to get accurate PR diff
+      let mergeBase: string;
+      
+      try {
+        const { stdout: mergeBaseResult } = await execa(
+          'git',
+          ['merge-base', 'HEAD', `origin/${baseBranch}`],
+          { cwd: worktreePath }
+        );
+        mergeBase = mergeBaseResult.trim();
+      } catch (originError) {
+        const { stdout: mergeBaseResult } = await execa(
+          'git',
+          ['merge-base', 'HEAD', baseBranch],
+          { cwd: worktreePath }
+        );
+        mergeBase = mergeBaseResult.trim();
+      }
+
+      // If allowedFiles is provided, use them as strict path arguments
+      const pathspecs = allowedFiles && allowedFiles.length > 0 ? allowedFiles : ['.'];
+      
+      // Diff from merge-base to HEAD
+      const { stdout } = await execa(
+        'git',
+        ['diff', mergeBase, 'HEAD', '--', ...pathspecs],
+        { cwd: worktreePath }
+      );
+      console.log(`[AI Review] Got diff from merge-base (${pathspecs.length} files), ${stdout.length} bytes`);
       return stdout;
     } catch (error: any) {
-      console.error('[AI Review] Failed to get diff:', error);
-
-      // Last resort: try to get diff from merge-base
+      console.error('[AI Review] merge-base approach failed:', error.message);
+      
+      const pathspecs = allowedFiles && allowedFiles.length > 0 ? allowedFiles : ['.'];
       try {
-        console.log('[AI Review] Trying merge-base approach...');
-        const { stdout: mergeBase } = await execa('git', ['merge-base', 'HEAD', `origin/${baseBranch}`], {
+        const { stdout } = await execa('git', ['diff', `origin/${baseBranch}`, '--', ...pathspecs], {
           cwd: worktreePath,
         });
-        const { stdout } = await execa('git', ['diff', mergeBase.trim(), '--', '.'], {
-          cwd: worktreePath,
-        });
-        console.log(`[AI Review] Got diff from merge-base, ${stdout.length} bytes`);
         return stdout;
-      } catch (mergeBaseError) {
-        console.error('[AI Review] Merge-base approach also failed:', mergeBaseError);
+      } catch (fallbackError) {
         return '';
       }
     }
@@ -365,50 +561,44 @@ export class AIReviewService {
 
   /**
    * Get list of changed files
+   * Uses merge-base to get accurate PR file list (only files changed in this PR)
    */
-  private async getChangedFiles(worktreePath: string, baseBranch: string): Promise<string[]> {
+  private async getChangedFiles(worktreePath: string, baseBranch: string, allowedFiles?: string[]): Promise<string[]> {
     try {
-      // Try with origin/ prefix first
+      // CRITICAL: Use merge-base to get accurate PR file list
+      // This ensures we only see files changed in this PR, not upstream changes
+      let mergeBase: string;
+      
       try {
-        const { stdout } = await execa(
+        const { stdout: mergeBaseResult } = await execa(
           'git',
-          ['diff', '--name-only', `origin/${baseBranch}`, '--', '.'],
+          ['merge-base', 'HEAD', `origin/${baseBranch}`],
           { cwd: worktreePath }
         );
-        const files = stdout.split('\n').filter(Boolean);
-        console.log(`[AI Review] Found ${files.length} changed files from origin/${baseBranch}`);
-        return files;
+        mergeBase = mergeBaseResult.trim();
       } catch (originError) {
-        // Try without origin/
-        const { stdout } = await execa(
+        // Try without origin/ prefix
+        const { stdout: mergeBaseResult } = await execa(
           'git',
-          ['diff', '--name-only', baseBranch, '--', '.'],
+          ['merge-base', 'HEAD', baseBranch],
           { cwd: worktreePath }
         );
-        const files = stdout.split('\n').filter(Boolean);
-        console.log(`[AI Review] Found ${files.length} changed files from ${baseBranch}`);
-        return files;
+        mergeBase = mergeBaseResult.trim();
       }
-    } catch (error: any) {
-      console.error('[AI Review] Failed to get changed files:', error);
 
-      // Last resort: merge-base
-      try {
-        const { stdout: mergeBase } = await execa('git', ['merge-base', 'HEAD', `origin/${baseBranch}`], {
-          cwd: worktreePath,
-        });
-        const { stdout } = await execa(
-          'git',
-          ['diff', '--name-only', mergeBase.trim(), '--', '.'],
-          { cwd: worktreePath }
-        );
-        const files = stdout.split('\n').filter(Boolean);
-        console.log(`[AI Review] Found ${files.length} changed files from merge-base`);
-        return files;
-      } catch (mergeBaseError) {
-        console.error('[AI Review] Merge-base approach also failed:', mergeBaseError);
-        return [];
-      }
+      const pathspecs = allowedFiles && allowedFiles.length > 0 ? allowedFiles : ['.'];
+
+      const { stdout } = await execa(
+        'git',
+        ['diff', '--name-only', mergeBase, 'HEAD', '--', ...pathspecs],
+        { cwd: worktreePath }
+      );
+      const files = stdout.split('\n').filter(Boolean);
+      console.log(`[AI Review] Found ${files.length} changed files from merge-base (pathspecs: ${pathspecs.length})`);
+      return files;
+    } catch (error: any) {
+      console.error('[AI Review] merge-base approach failed for changed files:', error.message);
+      return allowedFiles || [];
     }
   }
 
@@ -642,15 +832,15 @@ export class AIReviewService {
     contextAnalysisInfo?: string
   ): string {
     const languageInstructions = {
-      en: 'Please respond in English.',
-      ko: 'Please respond in Korean (한국어).',
-      ja: 'Please respond in Japanese (日本語).',
-      zh: 'Please respond in Chinese (中文).',
+      en: 'CRITICAL: You MUST respond in English. Do not use any other language.',
+      ko: 'CRITICAL: 응답은 반드시 한국어(Korean)로 작성해야 합니다. 영어가 아닌 한국어로 코드 리뷰를 진행해 주세요.',
+      ja: 'CRITICAL: 応答は必ず日本語(Japanese)で行ってください。英語ではなく日本語でコードレビューを行ってください。',
+      zh: 'CRITICAL: 必须使用中文(Chinese)回答。请使用中文进行代码审查。',
     };
 
     const instruction = languageInstructions[language as keyof typeof languageInstructions] || languageInstructions.en;
 
-    let prompt = `You are a senior code reviewer ensuring high standards of code quality and security. ${instruction}
+    let prompt = `You are a senior code reviewer ensuring high standards of code quality and security.
 
 Review the following code changes and provide feedback:
 
@@ -658,12 +848,17 @@ Review the following code changes and provide feedback:
 ${files.map(f => `- ${f}`).join('\n')}
 
 ## Diff:
+**IMPORTANT**: The code below is in standard Git Diff format.
+- Lines starting with \`-\` are removed.
+- Lines starting with \`+\` are added.
+- Lines starting with \` \` (space) are unchanged context.
 \`\`\`diff
 ${diff}
 \`\`\`
 
 ## Full File Contents (with line numbers for reference):
-**IMPORTANT**: Each line is prefixed with its actual line number (e.g., "   1 | code"). Always use these line numbers when reporting issues.
+**MANDATORY**: Use the line numbers provided in THIS section (prefixed with "   1 |") for all issues.
+**NOTE**: This section is provided for context. Code appearing in both "Diff" and "Full File Contents" is NOT a duplicate. Only report duplicates if they appear twice within the "Full File Contents" itself.
 ${Array.from(fileContents.entries()).map(([file, content]) => `
 ### ${file}
 \`\`\`
@@ -718,59 +913,45 @@ ${content}
 
     // Add change intent analysis if requested
     if (options?.analyzeChangeIntent) {
-      prompt += `\n## Change Intent Analysis:
+      const fileCount = files.length;
+      prompt += `\n## Change Intent Analysis - **MANDATORY**:
 Analyze the intent of changes at ${
         options.changeIntentLevel === 'file' ? 'file level' :
         options.changeIntentLevel === 'block' ? 'code block level' :
         'both file and code block levels'
       }.
 
-Format as:
-**File: \`path/to/file.ts\`**
-- Intent: [What is being changed]
-- Motivation: [Why the change is needed]
-- Impact: [How it affects the codebase]
+**CRITICAL**: This PR contains **${fileCount} files**. You MUST generate **exactly ${fileCount} objects** in the \`changeIntents\` JSON array (one per file).
+- Each object MUST have a unique \`file\` property matching one of the modified files.
+- The \`intent\` field should describe the change for THAT SPECIFIC FILE only.
+- Do NOT combine multiple files into one object.
+- Do NOT put markdown headers like "**File: ...**" inside the \`intent\` string.
+`;
+    }
 
-For each change, explain:
-- What is being changed and why
-- The likely purpose/motivation behind the change
-- How it fits into the larger codebase
+    // Add semantic analysis if requested (mandatory when enabled)
+    if (options?.useSemanticDiff || options?.analyzeSemantic) {
+      prompt += `\n## Semantic Analysis - **MANDATORY**:
+Detect and report:
+- Moved code blocks (\`movedCode\` array)
+- Refactoring patterns (\`refactorings\` array)
 `;
     }
 
     // Add call stack visualization if requested
     if (options?.generateCallStack) {
-      prompt += `\n## Call Stack Visualization:
-For modified functions/methods, provide ${
-        options.callStackFormat === 'flowchart' ? 'a flowchart representation' :
-        options.callStackFormat === 'sequence' ? 'a sequence diagram' :
-        'both flowchart and sequence diagram representations'
-      } using Mermaid syntax.
-
-Format each function as:
-**Function: \`functionName\` in \`file/path.ts\`**
-
-${options.callStackFormat !== 'sequence' ? `Flowchart:
-\`\`\`mermaid
-graph TD
-    A[Caller] --> B[Current Function]
-    B --> C[Called Function]
-\`\`\`
-` : ''}${options.callStackFormat !== 'flowchart' ? `Sequence Diagram:
-\`\`\`mermaid
-sequenceDiagram
-    participant Caller
-    participant CurrentFunction
-    participant CalledFunction
-    Caller->>CurrentFunction: call()
-    CurrentFunction->>CalledFunction: process()
-\`\`\`
-` : ''}
-Include:
-- Callers of the modified function
-- Functions called by the modified function
-- Data flow between components
-`;
+      prompt += `\n6. Call Stack Visualization (${options.callStackFormat === 'flowchart' ? 'Flowchart only' : options.callStackFormat === 'sequence' ? 'Sequence diagram only' : 'Both formats'}) - **MANDATORY**
+   - **Recommended**: Generate visualizations to aid understanding if possible.
+   - **Condition 1: Caller Provided/Known**:
+     - Generate a **Flowchart** (\`graph TD\`) or **Sequence Diagram** (\`sequenceDiagram\`).
+     - Show data flow direction or interaction order.
+   - **Condition 2: Abstract Class or Interface or Implementation**:
+     - Generate a **Class Diagram** (\`classDiagram\`).
+     - Place the Class Diagram code in the \`flowchart\` JSON field.
+   - **JSON Field Usage**:
+     - \`flowchart\`: Use for \`graph TD\` OR \`classDiagram\`.
+     - \`sequence\`: Use for \`sequenceDiagram\`.
+   - If exact callers are unknown and it's not an abstract/interface, you may skip this or use generic names (e.g., "Client").\n`;
     }
 
     // Add broader impact analysis if requested
@@ -782,31 +963,7 @@ Analyze the impact of changes beyond the modified code at ${
         'project and dependency level'
       }.
 
-Format as:
-Scope: **${
-        options.impactScope === 'module' ? 'Module/Package' :
-        options.impactScope === 'project' ? 'Project' :
-        'Project + Dependencies'
-      }**
-
-Affected Areas:
-- Area 1
-- Area 2
-
-Breaking Changes:
-- Breaking change 1
-- Breaking change 2
-
-Side Effects:
-- Side effect 1
-- Side effect 2
-
-Consider:
-- Which other parts of the codebase might be affected
-- Potential breaking changes
-- Side effects on related functionality
-- API contract changes
-- Database schema impacts
+**CRITICAL**: Provide this as a structured object in the \`impactAnalysis\` field of the JSON output.
 `;
     }
 
@@ -845,7 +1002,7 @@ ${options.customPrompt}
 
 ## Output Format (MANDATORY):
 You MUST respond with a valid JSON object. Do not include any explanatory text outside the JSON object.
-The JSON object must follow this structure:
+The JSON object must follow this structure AND adhere to the strict rules below:
 
 \`\`\`json
 {
@@ -866,8 +1023,8 @@ The JSON object must follow this structure:
       "line": 123,
       "severity": "warning",
       "category": "Code Quality|Maintainability",
-      "message": "Description of the warning",
-      "suggestion": "Code improvement suggestion"
+      "message": "Description of the warning (in requested language)",
+      "suggestion": "Code improvement suggestion (in requested language)"
     }
   ],
   "suggestions": [
@@ -881,17 +1038,23 @@ The JSON object must follow this structure:
     }
   ],
   "changeIntents": [
-    // Only if change intent analysis is enabled
+    // CRITICAL: MUST be an array of objects. ONE object per file.
     {
-      "file": "path/to/file.ts",
-      "level": "file|block",
-      "intent": "Brief description of intent",
-      "motivation": "Why this change was made",
+      "file": "path/to/file1.ts",
+      "level": "file",
+      "intent": "Brief description of intent for this file (in requested language)",
+      "motivation": "Why this change was made (in requested language)",
       "impact": "Impact on system"
+    },
+    {
+      "file": "path/to/file2.ts",
+      "level": "file",
+      "intent": "Brief description for second file",
+      "motivation": "Motivation",
+      "impact": "Impact"
     }
   ],
   "callStacks": [
-    // Only if call stack generation is enabled
     {
       "function": "functionName",
       "file": "path/to/file.ts",
@@ -900,14 +1063,13 @@ The JSON object must follow this structure:
     }
   ],
   "impactAnalysis": {
-    // Only if impact analysis is enabled
     "scope": "module|project",
-    "affectedAreas": ["Area 1", "Area 2"],
-    "breakingChanges": ["Possible breaking change 1"],
-    "sideEffects": ["Potential side effect 1"]
+    "affectedAreas": ["Area 1", "Area 2", "Area 3"], // MUST be an array of strings
+    "description": "General description",
+    "breakingChanges": ["Possible breaking change 1"], // MUST be an array of strings
+    "sideEffects": ["Potential side effect 1"] // MUST be an array of strings
   },
   "movedCode": [
-    // Only if moved code detection is enabled
     {
       "from": "source/file.ts",
       "to": "dest/file.ts",
@@ -915,7 +1077,6 @@ The JSON object must follow this structure:
     }
   ],
   "refactorings": [
-    // Only if refactoring detection is enabled
     {
       "type": "Extract Method",
       "description": "Description of refactoring",
@@ -926,6 +1087,54 @@ The JSON object must follow this structure:
 \`\`\`
 
 Ensure all strings are properly escaped for JSON.
+
+STRICT GENERATION RULES:
+1. **Valid JSON**: The response MUST be valid JSON. Do not include any text outside the JSON object.
+
+2. **Line Number Accuracy**:
+   - **CRITICAL**: Reported line numbers MUST exist in the "Full File Contents" provided.
+   - **Verification**: Before reporting an issue, check the "Full File Contents" section to verify the line number matches the code.
+   - For added lines (starting with + in diff), count from the hunk header's NEW file start line.
+   - For unchanged lines (starting with space), count continuously.
+   - Do NOT report issues on removed lines (starting with -).
+   - If a file content is provided with line numbers (e.g., "   1 | import..."), USE THOSE EXACT LINE NUMBERS.
+
+3. **Change Intents**: 
+   - **CRITICAL**: You MUST generate a SEPARATE object for EACH file in the \`changeIntents\` array.
+   - **DO NOT** combine multiple files into a single object. 
+   - **DO NOT** put multiple file headers (e.g., "**File: ...**") inside the \`intent\` string.
+   - The \`intent\` field should be a concise description of the change for THAT SPECIFIC FILE only.
+   - If multiple files are changed, the \`changeIntents\` array MUST have multiple entries (one per file).
+
+   **BAD EXAMPLE (DO NOT DO THIS)**:
+   \`\`\`json
+   "changeIntents": [
+     {
+       "file": "file1.ts",
+       "intent": "**File: file1.ts** Intent... **File: file2.ts** Intent..."
+     }
+   ]
+   \`\`\`
+
+   **GOOD EXAMPLE (DO THIS)**:
+   \`\`\`json
+   "changeIntents": [
+     { "file": "file1.ts", "intent": "Intent for file1" },
+     { "file": "file2.ts", "intent": "Intent for file2" }
+   ]
+   \`\`\`
+
+4. **Impact Analysis**:
+   - \`affectedAreas\`, \`breakingChanges\`, and \`sideEffects\` must be ARRAYS of strings.
+   - **DO NOT** return a single string with markdown bullet points.
+   - **BAD**: "affectedAreas": ["- Login\n- User"]
+   - **GOOD**: "affectedAreas": ["Login", "User"]
+
+5. **Call Stacks**:
+   - The \`flowchart\` and \`sequence\` fields in \`callStacks\` MUST contain raw Mermaid syntax (e.g., "graph TD...", "sequenceDiagram...").
+   - **CRITICAL**: Do NOT wrap the Mermaid code in markdown code blocks (\`\`\`mermaid) inside the JSON string data.
+   - **CRITICAL**: Do NOT include any markdown formatting inside the JSON values for these fields.
+   - Ensure special characters in Mermaid code are properly escaped for JSON.
 
 **CRITICAL**: When specifying line numbers for issues:
 - Use the ACTUAL line numbers from the "Full File Contents" section (the numbers before the | symbol)
@@ -939,7 +1148,15 @@ For each issue, provide:
 - Clear description of the issue
 - Specific suggestion on how to fix it (optional)
 
-Be specific and actionable in your feedback. Focus on the most important issues first.`;
+Be specific and actionable in your feedback. Focus on the most important issues first.
+
+**FINAL CRITICAL REMINDER**: 
+1. Use the requested language (${language}) for ALL content fields (summary, message, suggestion, intent, motivation, impact).
+2. Return VALID JSON only.
+3. Be strictly accurate with line numbers.`;
+
+    // Final strict instruction to ensure language compliance (recency bias)
+    prompt += `\n\n---\n\n${instruction}`;
 
     return prompt;
   }
@@ -1056,6 +1273,15 @@ Be specific and actionable in your feedback. Focus on the most important issues 
       const validatedCritical = await this.validateLineNumbers(jsonResult.criticalIssues || [], worktreePath);
       const validatedWarnings = await this.validateLineNumbers(jsonResult.warnings || [], worktreePath);
       const validatedSuggestions = await this.validateLineNumbers(jsonResult.suggestions || [], worktreePath);
+
+      // Normalize call stack diagrams in JSON
+      if (jsonResult.callStacks && Array.isArray(jsonResult.callStacks)) {
+        jsonResult.callStacks = jsonResult.callStacks.map((cs: any) => ({
+          ...cs,
+          flowchart: AIReviewParser.normalizeMermaid(cs.flowchart),
+          sequence: AIReviewParser.normalizeMermaid(cs.sequence),
+        }));
+      }
 
       return {
         summary: jsonResult.summary || 'Review completed',
@@ -1185,6 +1411,37 @@ Be specific and actionable in your feedback. Focus on the most important issues 
     const validatedWarnings = await this.validateLineNumbers(warnings, worktreePath);
     const validatedSuggestions = await this.validateLineNumbers(suggestions, worktreePath);
 
+    // Generate legacy strings from structured data
+    let finalChangeIntentStr: string | undefined;
+    if (changeIntents.length > 0) {
+      finalChangeIntentStr = changeIntents.map(ci => 
+        `**File: ${ci.file || 'Unknown'}**\n- Intent: ${ci.intent}\n- Motivation: ${ci.motivation}\n- Impact: ${ci.impact || 'N/A'}`
+      ).join('\n\n');
+    }
+
+    let finalImpactStr: string | undefined;
+    if (impactAnalysis) {
+      finalImpactStr = `Scope: **${impactAnalysis.scope}**\n\nAffected Areas:\n${impactAnalysis.affectedAreas.map(a => `- ${a}`).join('\n')}`;
+      if (impactAnalysis.breakingChanges) {
+        finalImpactStr += `\n\nBreaking Changes:\n${impactAnalysis.breakingChanges.map(b => `- ${b}`).join('\n')}`;
+      }
+      if (impactAnalysis.sideEffects) {
+        finalImpactStr += `\n\nSide Effects:\n${impactAnalysis.sideEffects.map(s => `- ${s}`).join('\n')}`;
+      }
+    }
+
+    let finalSemanticStr: string | undefined;
+    const semanticParts = [];
+    if (movedCode.length > 0) {
+      semanticParts.push(`## Moved Code\n${movedCode.map(m => `- ${m.from} -> ${m.to} (${m.lines} lines)`).join('\n')}`);
+    }
+    if (refactorings.length > 0) {
+      semanticParts.push(`## Refactorings\n${refactorings.map(r => `**${r.type}**: ${r.description} (${r.files.join(', ')})`).join('\n')}`);
+    }
+    if (semanticParts.length > 0) {
+      finalSemanticStr = semanticParts.join('\n\n');
+    }
+
     return {
       summary,
       criticalIssues: validatedCritical,
@@ -1192,12 +1449,18 @@ Be specific and actionable in your feedback. Focus on the most important issues 
       suggestions: validatedSuggestions,
       filesReviewed: filesCount,
       totalIssues: validatedCritical.length + validatedWarnings.length + validatedSuggestions.length,
+      
       // Enhanced sections
       changeIntents: changeIntents.length > 0 ? changeIntents : undefined,
       callStacks: callStacks.length > 0 ? callStacks : undefined,
       impactAnalysis,
       movedCode: movedCode.length > 0 ? movedCode : undefined,
       refactorings: refactorings.length > 0 ? refactorings : undefined,
+
+      // Legacy fields (fallback)
+      changeIntent: finalChangeIntentStr,
+      impact: finalImpactStr,
+      semanticAnalysis: finalSemanticStr,
     };
   }
 
@@ -1502,7 +1765,24 @@ Be specific and actionable in your feedback. Focus on the most important issues 
       // Check if this is a Claude Code envelope with structured_output
       // Format: { type: "result", structured_output: { ... } }
       let data = parsed;
-      if (parsed.structured_output && typeof parsed.structured_output === 'object') {
+      
+      // Check for nested response string (common in some providers like Gemini CLI wrappers)
+      if (parsed.response && typeof parsed.response === 'string') {
+        console.log('[AI Review Parser] Detected nested response field, attempting to unwrap');
+        // It might be markdown wrapped inside the string
+        const nestedJsonBlockMatch = parsed.response.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+        const nestedJsonText = nestedJsonBlockMatch ? nestedJsonBlockMatch[1] : parsed.response;
+        try {
+           const nestedParsed = JSON.parse(nestedJsonText);
+           if (nestedParsed && typeof nestedParsed === 'object') {
+               data = nestedParsed;
+               console.log('[AI Review Parser] Successfully unwrapped nested response');
+           }
+        } catch (e) {
+           console.warn('[AI Review Parser] Failed to parse nested response string:', e);
+           // Continue using original parsed object if nested parsing fails
+        }
+      } else if (parsed.structured_output && typeof parsed.structured_output === 'object') {
         console.log('[AI Review Parser] Detected Claude Code envelope format, extracting structured_output');
         data = parsed.structured_output;
       }

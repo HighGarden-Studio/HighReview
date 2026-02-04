@@ -21,12 +21,13 @@ import 'prismjs/components/prism-rust';
 import 'prismjs/components/prism-css';
 import 'prismjs/components/prism-json';
 import 'prismjs/components/prism-markdown';
-import { ThemeToggle } from '../components/ThemeToggle';
-import { LanguageSelector } from '../components/LanguageSelector';
+
 import { Toast } from '../components/Toast';
 import { AIReviewOptionsModal, type AIReviewOptions } from '../components/AIReviewOptionsModal';
 import { CommentEditor } from '../components/CommentEditor';
 import { useTheme } from '../contexts/ThemeContext';
+import { Scanner } from '../components/Scanner';
+
 
 type Tab = 'conversation' | 'commits' | 'checks' | 'files';
 
@@ -76,7 +77,7 @@ function extractLineNumbers(diffHunk: string): { startLine: number; endLine: num
 }
 
 // Helper function to render diff with line numbers and syntax highlighting
-function renderDiffWithLineNumbers(diffHunk: string, isDarkMode: boolean, filePath?: string): JSX.Element {
+function renderLineDiff(diffHunk: string, isDarkMode: boolean, filePath?: string): React.ReactNode {
   if (!diffHunk) return <></>;
 
   const lines = diffHunk.split('\n');
@@ -94,7 +95,7 @@ function renderDiffWithLineNumbers(diffHunk: string, isDarkMode: boolean, filePa
   const prismLanguage = Prism.languages[language] || Prism.languages.javascript;
 
   return (
-    <div className="font-mono text-xs">
+    <div className="font-mono text-xs text-light-text-primary dark:text-dark-text-primary">
       {contentLines.map((line, idx) => {
         const isAddition = line.startsWith('+');
         const isDeletion = line.startsWith('-');
@@ -186,12 +187,12 @@ function reactionToEmoji(content: string): string {
 function groupReactions(reactions?: { nodes: Array<{ content: string; user: { login: string } }> }) {
   if (!reactions?.nodes || reactions.nodes.length === 0) return [];
 
-  const grouped: { [key: string]: { emoji: string; count: number; users: string[] } } = {};
+  const grouped: { [key: string]: { emoji: string; count: number; users: string[]; content: string } } = {};
 
   reactions.nodes.forEach(reaction => {
     const emoji = reactionToEmoji(reaction.content);
     if (!grouped[emoji]) {
-      grouped[emoji] = { emoji, count: 0, users: [] };
+      grouped[emoji] = { emoji, count: 0, users: [], content: reaction.content };
     }
     grouped[emoji].count++;
     grouped[emoji].users.push(reaction.user.login);
@@ -206,75 +207,9 @@ function processMentions(text: string): string {
   return text.replace(/(@[\w-]+)/g, '**$1**');
 }
 
-// Helper function to render text with mentions highlighted (for ReactMarkdown components)
-function renderTextWithMentions(children: any): any {
-  // Handle different types of children
-  if (typeof children === 'string') {
-    const parts = children.split(/(@[\w-]+)/g);
-    if (parts.length === 1) return children;
 
-    return parts.map((part, idx) => {
-      if (part.match(/^@[\w-]+$/)) {
-        return (
-          <span
-            key={idx}
-            className="font-semibold text-light-accent-primary dark:text-dark-accent-primary hover:underline cursor-pointer"
-          >
-            {part}
-          </span>
-        );
-      }
-      return part;
-    });
-  }
 
-  // Handle arrays of children
-  if (Array.isArray(children)) {
-    return children.map((child, idx) =>
-      typeof child === 'string' ? (
-        <span key={idx}>{renderTextWithMentions(child)}</span>
-      ) : child
-    );
-  }
 
-  return children;
-}
-
-// Helper function to organize review comments into threads
-interface CommentThread {
-  topLevelComment: any;
-  replies: any[];
-}
-
-function organizeCommentsIntoThreads(comments: any[]): CommentThread[] {
-  if (!comments || comments.length === 0) return [];
-
-  // Create a map of comment ID to comment for quick lookupconst commentMap = new Map(comments.map(c => [c.id, c]));
-
-  // Separate top-level comments and replies
-  const topLevelComments: any[] = [];
-  const repliesByParentId = new Map<string, any[]>();
-
-  comments.forEach(comment => {
-    if (comment.replyTo?.id) {
-      // This is a reply
-      const parentId = comment.replyTo.id;
-      if (!repliesByParentId.has(parentId)) {
-        repliesByParentId.set(parentId, []);
-      }
-      repliesByParentId.get(parentId)!.push(comment);
-    } else {
-      // This is a top-level comment
-      topLevelComments.push(comment);
-    }
-  });
-
-  // Build threads
-  return topLevelComments.map(topComment => ({
-    topLevelComment: topComment,
-    replies: repliesByParentId.get(topComment.id) || []
-  }));
-}
 
 // Mermaid diagram component
 function MermaidDiagram({ chart }: { chart: string }) {
@@ -457,6 +392,36 @@ export function PRDetailPage() {
 
   const handleShowAIOptionsModal = (initialFilePath?: string, commentInfo?: any) => {
     setPendingReviewData({ initialFilePath, commentInfo });
+    
+    // If we have an existing review and no specific context is requested, skip the modal
+    if (hasAIReview && !initialFilePath && !commentInfo) {
+      handleStartReviewWithOptions({
+        model: undefined, 
+        candidateCount: 1, 
+        temperature: 0.2, 
+        includeContext: false,
+        contextScope: 'both',
+        analyzeChangeIntent: true,
+        changeIntentLevel: 'both',
+        generateCallStack: true,
+        callStackFormat: 'both',
+        analyzeBroaderImpact: true,
+        impactScope: 'module',
+        useSemanticDiff: true,
+        detectMovedCode: true,
+        detectRefactoring: true,
+        ignoreWhitespace: true,
+        ignoreComments: false,
+        customPrompt: '',
+        changeIntents: true,
+        callStackAnalysis: true,
+        impactAnalysis: true,
+        semanticAnalysis: true,
+        securityAnalysis: true,
+      });
+      return;
+    }
+
     setShowAIOptionsModal(true);
   };
 
@@ -483,7 +448,7 @@ export function PRDetailPage() {
 
       // Small delay to show success message
       setTimeout(() => {
-        navigate('/review', {
+        navigate(`/review/${owner}/${repo}/${number}`, {
           state: {
             worktreePath: data.worktreePath,
             baseBranch: prData.pullRequest.baseRefName,
@@ -525,13 +490,11 @@ export function PRDetailPage() {
     });
   };
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleString();
-  };
+
 
   // Reaction handling
   const [reactionPickerOpen, setReactionPickerOpen] = useState<string | null>(null);
-  const currentUser = authStatus?.username;
+  const currentUser = authStatus?.user?.username;
 
   const handleReactionClick = async (commentId: string, reactionContent: string, currentReactions: any) => {
     if (!owner || !repo || !currentUser) return;
@@ -539,7 +502,7 @@ export function PRDetailPage() {
     try {
       // Convert emoji to GitHub reaction content format
       const githubReactionContent = emojiToReactionContent(reactionContent);
-
+      
       // Check if current user already reacted with this emoji
       const userHasReacted = currentReactions.nodes?.some(
         (r: any) => r.content === githubReactionContent && r.user?.login === currentUser
@@ -572,7 +535,7 @@ export function PRDetailPage() {
     }
   };
 
-  const handleAddReaction = async (commentId: string, emoji: string, reactionContent: string) => {
+  const handleAddReaction = async (commentId: string, _emoji: string, reactionContent: string) => {
     if (!owner || !repo) return;
 
     try {
@@ -670,15 +633,11 @@ export function PRDetailPage() {
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-light-bg dark:bg-dark-bg">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-light-accent-primary dark:border-dark-accent-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-light-text-secondary dark:text-dark-text-secondary">
-            Loading PR details...
-          </p>
-        </div>
+        <Scanner label="Loading PR details..." />
       </div>
     );
   }
+
 
   if (!prData) {
     return (
@@ -693,7 +652,7 @@ export function PRDetailPage() {
   }
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg">
+    <div className="h-full bg-light-bg dark:bg-dark-bg flex flex-col">
       {/* Toast Notification */}
       {toast && (
         <Toast
@@ -703,7 +662,6 @@ export function PRDetailPage() {
         />
       )}
 
-      {/* AI Review Options Modal */}
       <AIReviewOptionsModal
         isOpen={showAIOptionsModal}
         onClose={() => {
@@ -713,46 +671,8 @@ export function PRDetailPage() {
         onConfirm={handleStartReviewWithOptions}
       />
 
-      {/* Header */}
-      <header className="border-b border-light-border dark:border-dark-border bg-light-surface/80 dark:bg-dark-surface/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div
-              className="flex items-center gap-3 cursor-pointer"
-              onClick={() => navigate('/')}
-            >
-              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary flex items-center justify-center text-white font-bold text-lg shadow-lg">
-                H
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-light-text-primary dark:text-dark-text-primary">
-                  HighReview
-                </h1>
-                <p className="text-xs text-light-text-muted dark:text-dark-text-muted">
-                  Pull Request #{number}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {authStatus?.authenticated && (
-              <div className="flex items-center gap-3">
-                <div className="text-right">
-                  <p className="text-sm font-medium text-light-text-primary dark:text-dark-text-primary">
-                    {authStatus.user.username}
-                  </p>
-                </div>
-              </div>
-            )}
-            <LanguageSelector />
-            <ThemeToggle />
-          </div>
-        </div>
-      </header>
-
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-8">
+      <main className="container mx-auto px-4 py-8 h-full overflow-y-auto">
         <div className="max-w-6xl mx-auto">
           {/* Back Button */}
           <button
@@ -830,7 +750,7 @@ export function PRDetailPage() {
                     >
                       {prData.pullRequest.state === 'OPEN' ? 'Open' : 'Closed'}
                     </span>
-                    {hasAIReview && (
+                      {hasAIReview && (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-gradient-to-r from-purple-500/10 to-blue-500/10 dark:from-purple-400/10 dark:to-blue-400/10 text-purple-600 dark:text-purple-400 border border-purple-500/30 dark:border-purple-400/30" title="AI Review completed">
                         <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                           <path d="M13 7H7v6h6V7z" />
@@ -838,6 +758,56 @@ export function PRDetailPage() {
                         </svg>
                         AI Reviewed
                       </span>
+                    )}
+                    {prData.pullRequest.viewerLatestReview && (
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full border ${
+                          prData.pullRequest.viewerLatestReview.state === 'APPROVED'
+                            ? 'bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/30'
+                            : prData.pullRequest.viewerLatestReview.state === 'CHANGES_REQUESTED'
+                            ? 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/30'
+                            : 'bg-gray-500/10 text-gray-600 dark:text-gray-400 border-gray-500/30'
+                        }`}
+                        title={`You reviewed on ${new Date(prData.pullRequest.viewerLatestReview.createdAt).toLocaleDateString()}`}
+                      >
+                         {prData.pullRequest.viewerLatestReview.state === 'APPROVED' ? (
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                        ) : prData.pullRequest.viewerLatestReview.state === 'CHANGES_REQUESTED' ? (
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-3.582 8-8 8a8.013 8.013 0 01-5.685-2.347l-4.14 1.487 1.488-4.14A8 8 0 1121 12z" />
+                          </svg>
+                        )}
+                        {prData.pullRequest.viewerLatestReview.state === 'APPROVED'
+                          ? 'Approved'
+                          : prData.pullRequest.viewerLatestReview.state === 'CHANGES_REQUESTED'
+                          ? 'Changes Requested'
+                          : 'Commented'}
+                      </span>
+                    )}
+                    {/* PR Labels */}
+                    {prData.pullRequest.labels && prData.pullRequest.labels.length > 0 && (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {prData.pullRequest.labels.map((label: any) => (
+                          <span
+                            key={label.name}
+                            className="px-2 py-0.5 text-xs font-bold rounded-full border shadow-sm transition-opacity hover:opacity-80"
+                            style={{
+                              backgroundColor: `#${label.color}20`,
+                              borderColor: `#${label.color}40`,
+                              color: isDarkMode ? `#${label.color}` : `color-mix(in srgb, #${label.color}, black 20%)`,
+                            }}
+                            title={label.description}
+                          >
+                            {label.name}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -893,7 +863,10 @@ export function PRDetailPage() {
                         const match = /language-(\w+)/.exec(className || '');
                         const language = match ? match[1] : 'text';
 
-                        if (inline) {
+                        // Heuristic: explicit inline, or no language specified and no newlines (likely inline)
+                        const isInline = inline || (!match && !String(children).includes('\n'));
+
+                        if (isInline) {
                           return (
                             <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
                               {children}
@@ -1016,10 +989,6 @@ export function PRDetailPage() {
                         return (
                           <>
                             {reactions.map((reaction, idx) => {
-                              // Find the original GitHub content for this emoji
-                              const originalContent = prData.pullRequest.reactions?.nodes?.find(
-                                (r: any) => reactionToEmoji(r.content) === reaction.emoji
-                              )?.content;
                               const userHasReacted = prData.pullRequest.reactions?.nodes?.some(
                                 (r: any) => reactionToEmoji(r.content) === reaction.emoji && r.user?.login === currentUser
                               );
@@ -1148,12 +1117,10 @@ export function PRDetailPage() {
               {activeTab === 'conversation' && (
                 <div className="space-y-3">
                   {loadingConversation ? (
-                    <div className="text-center py-12">
-                      <div className="w-8 h-8 border-4 border-light-accent-primary dark:border-dark-accent-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                      <p className="text-light-text-secondary dark:text-dark-text-secondary">
-                        Loading conversation...
-                      </p>
+                    <div className="py-12 flex justify-center">
+                      <Scanner label="Loading conversation..." />
                     </div>
+
                   ) : conversationData?.conversation && conversationData.conversation.length > 0 ? (
                     conversationData.conversation.map((item: any, index: number) => {
                       const prAuthor = conversationData.prAuthor;
@@ -1255,8 +1222,11 @@ export function PRDetailPage() {
                                         const match = /language-(\w+)/.exec(className || '');
                                         const language = match ? match[1] : 'text';
 
+                                        // Heuristic: explicit inline, or no language specified and no newlines (likely inline)
+                                        const isInline = inline || (!match && !String(children).includes('\n'));
+
                                         // Inline code
-                                        if (inline) {
+                                        if (isInline) {
                                           return (
                                             <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
                                               {children}
@@ -1438,7 +1408,10 @@ export function PRDetailPage() {
                                             const match = /language-(\w+)/.exec(className || '');
                                             const language = match ? match[1] : 'text';
 
-                                            if (inline) {
+                                            // Heuristic: explicit inline, or no language specified and no newlines (likely inline)
+                                            const isInline = inline || (!match && !String(children).includes('\n'));
+
+                                            if (isInline) {
                                               return (
                                                 <code className="px-1.5 py-0.5 rounded bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-primary dark:text-dark-text-primary font-mono text-xs border border-light-border dark:border-dark-border" {...props}>
                                                   {children}
@@ -1488,10 +1461,10 @@ export function PRDetailPage() {
                           <div key={item.id || index} className="border border-light-border dark:border-dark-border rounded-md overflow-hidden my-6">
                             {/* File Path and Line Numbers */}
                             <div className="px-4 py-2 bg-light-surface-elevated dark:bg-dark-surface-elevated border-b border-light-border dark:border-dark-border">
-                              <div className="flex items-center justify-between">
+                              <div className="flex items-center justify-start gap-4">
                                 <button
                                   onClick={() => handleFilePathClick(firstComment.path, firstComment)}
-                                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-light-text-secondary dark:text-dark-text-secondary hover:text-light-accent-primary dark:hover:text-dark-accent-primary transition-colors"
+                                  className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-left text-light-text-secondary dark:text-dark-text-secondary hover:text-light-accent-primary dark:hover:text-dark-accent-primary transition-colors"
                                 >
                                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -1530,7 +1503,7 @@ export function PRDetailPage() {
                                   )}
                                 </div>
                                 <div className="overflow-x-auto">
-                                  {renderDiffWithLineNumbers(firstComment.diffHunk, isDarkMode, firstComment.path)}
+                                  {renderLineDiff(firstComment.diffHunk, isDarkMode, firstComment.path)}
                                 </div>
                               </div>
                             )}
@@ -1726,10 +1699,10 @@ export function PRDetailPage() {
                                     <div className="text-xs font-medium text-light-text-muted dark:text-dark-text-muted mb-3">
                                       {item.comments.nodes.length - 1} {item.comments.nodes.length - 1 === 1 ? 'reply' : 'replies'}
                                     </div>
-                                    {item.comments.nodes.slice(1).map((reply: any, replyIdx: number) => {
+                                    {item.comments.nodes.slice(1).map((reply: any) => {
                                       const isReplyAuthor = reply.author?.login === prAuthor;
                                       const replyReactions = groupReactions(reply.reactions);
-                                      const isLastReply = replyIdx === item.comments.nodes.length - 2;
+
 
                                       return (
                                         <div key={reply.id} className="relative">
@@ -1808,7 +1781,10 @@ export function PRDetailPage() {
                                                           return <blockquote className="border-l-4 border-light-accent-primary dark:border-dark-accent-primary pl-3 italic my-2 text-sm" {...props}>{children}</blockquote>;
                                                         },
                                                         li: ({node, children, ...props}) => {
-                                                          const hasCheckbox = node?.properties?.className?.includes('task-list-item');
+                                                          const className = node?.properties?.className;
+                                                          const hasCheckbox = Array.isArray(className) 
+                                                            ? className.includes('task-list-item')
+                                                            : typeof className === 'string' && className.includes('task-list-item');
                                                           if (hasCheckbox) return (<li className="flex items-center gap-2 text-light-text-primary dark:text-dark-text-primary list-none text-sm" {...props}>{children}</li>);
                                                           return <li className="text-light-text-primary dark:text-dark-text-primary text-sm" {...props}>{children}</li>;
                                                         },
@@ -1939,7 +1915,7 @@ export function PRDetailPage() {
                                       isSubmitting={isSubmitting}
                                       autoFocus={true}
                                       minHeight={120}
-                                      originalCode={firstComment.diffHunk ? firstComment.diffHunk.split('\n').filter(l => l.startsWith('+')).map(l => l.substring(1)).join('\n') : undefined}
+                                      originalCode={firstComment.diffHunk ? firstComment.diffHunk.split('\n').filter((l: string) => l.startsWith('+')).map((l: string) => l.substring(1)).join('\n') : undefined}
                                     />
                                   )}
                                 </div>

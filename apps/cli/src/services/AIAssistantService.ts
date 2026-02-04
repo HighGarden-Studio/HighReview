@@ -62,6 +62,9 @@ export interface AssistantRequest {
 
   /** Optional model override */
   model?: string;
+
+  /** User language preference */
+  language?: string;
 }
 
 export interface StreamChunk {
@@ -290,8 +293,20 @@ export class AIAssistantService {
   private buildPrompt(request: AssistantRequest): string {
     let prompt = '';
 
+    // Language instruction
+    const language = request.language || 'en';
+    const languageInstructions = {
+      en: 'CRITICAL: You MUST respond in English.',
+      ko: 'CRITICAL: 반드시 한국어(Korean)로 답변하십시오. 사용자의 질문에 대해 자연스러운 한국어로 응답해 주세요.',
+      ja: 'CRITICAL: 必ず日本語(Japanese)で答えてください。',
+      zh: 'CRITICAL: 必须使用中文(Chinese)回答。',
+    };
+    const langInstruction = languageInstructions[language as keyof typeof languageInstructions] || languageInstructions.en;
+
     // System message
     prompt += `You are a friendly and helpful AI assistant for software development.
+
+${langInstruction}
 
 Your role:
 - Answer user questions naturally and conversationally
@@ -366,15 +381,19 @@ Be helpful, friendly, and context-aware.\n\n`;
 
       // Documentation
       if (ctx.documentation && ctx.documentation.length > 0) {
-        prompt += `**Documentation:**\n\n`;
+        prompt += `**Documentation & Context:**\n\n`;
         for (const doc of ctx.documentation) {
-          prompt += `${doc.title}:\n${doc.content}\n\n`;
+          if (doc.title === 'Smart Review Context') {
+             prompt += `IMPORTANT: The following is a COMPRESSED summary of the active code review. Use this to explicitly know what issues have already been found without needing to re-analyze the whole file.\n${doc.content}\n\n`;
+          } else {
+             prompt += `${doc.title}:\n${doc.content}\n\n`;
+          }
         }
       }
     }
 
     // Final instructions
-    prompt += `---\n\nRemember: Answer the user's question directly and naturally. The context above is provided for reference but should only be used if relevant to their specific question.`;
+    prompt += `---\n\nRemember: Answer the user's question directly and naturally. The context above is provided for reference but should only be used if relevant to their specific question.\n\n${langInstruction}`;
 
     return prompt;
   }

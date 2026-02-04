@@ -61,13 +61,13 @@ export class IndexedLanguageProvider {
    */
   private registerDefinitionProvider(languageId: string): void {
     const provider: monaco.languages.DefinitionProvider = {
-      provideDefinition: async (model, position, token) => {
+      provideDefinition: async (model, position, _token) => {
         try {
           const wordInfo = model.getWordAtPosition(position);
           if (!wordInfo) return null;
 
           const symbolName = wordInfo.word;
-          const filePath = this.getRelativeFilePath(model.uri.toString());
+          this.getRelativeFilePath(model.uri.toString());
 
           // Query our index
           const response = await fetch(
@@ -109,7 +109,7 @@ export class IndexedLanguageProvider {
    */
   private registerReferenceProvider(languageId: string): void {
     const provider: monaco.languages.ReferenceProvider = {
-      provideReferences: async (model, position, context, token) => {
+      provideReferences: async (model, position, _context, _token) => {
         try {
           const wordInfo = model.getWordAtPosition(position);
           if (!wordInfo) return null;
@@ -157,7 +157,7 @@ export class IndexedLanguageProvider {
    */
   private registerHoverProvider(languageId: string): void {
     const provider: monaco.languages.HoverProvider = {
-      provideHover: async (model, position, token) => {
+      provideHover: async (model, position, _token) => {
         try {
           const wordInfo = model.getWordAtPosition(position);
           if (!wordInfo) return null;
@@ -232,7 +232,7 @@ export class IndexedLanguageProvider {
    */
   private registerDocumentSymbolProvider(languageId: string): void {
     const provider: monaco.languages.DocumentSymbolProvider = {
-      provideDocumentSymbols: async (model, token) => {
+      provideDocumentSymbols: async (model, _token) => {
         try {
           const filePath = this.getRelativeFilePath(model.uri.toString());
 

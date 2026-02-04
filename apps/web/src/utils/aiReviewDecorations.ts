@@ -39,9 +39,16 @@ export function processAIReviewForFile(
   console.log('[processAIReviewForFile] Issues:', issues.length);
   console.log('[processAIReviewForFile] Call stacks:', callStacks.length);
 
+  // Normalize file paths for comparison (handle both relative and absolute paths)
+  const normalizedFilePath = filePath.replace(/^\.\//, '');
+
   // Add issue decorations
   for (const issue of issues) {
-    if (issue.file === filePath) {
+    const normalizedIssueFile = issue.file.replace(/^\.\//, '');
+    
+    if (normalizedIssueFile === normalizedFilePath || 
+        issue.file.endsWith(normalizedFilePath) || 
+        normalizedFilePath.endsWith(normalizedIssueFile)) {
       decorations.push({
         line: issue.line,
         type: 'issue',
@@ -461,19 +468,31 @@ export function getAIReviewStyles(): string {
       font-weight: 600 !important;
       padding: 2px 8px !important;
       border-radius: 4px !important;
-      border: 1px solid rgba(128, 128, 128, 0.3) !important;
-      background-color: rgba(128, 128, 128, 0.1) !important;
+      font-family: 'SF Mono', Monaco, Menlo, Consolas, 'Ubuntu Mono', monospace !important;
       margin: 0 2px !important;
     }
-    /* Light theme severity colors */
-    .monaco-hover[data-color-mode="light"] code,
-    .monaco-hover:not([data-color-mode="dark"]) code {
+
+    /* Light Mode Styles */
+    .monaco-editor.vs .monaco-hover code,
+    .monaco-hover:not(.vs-dark) code {
       color: rgb(31, 41, 55) !important;
+      background-color: rgba(243, 244, 246, 1) !important;
+      border: 1px solid rgba(209, 213, 219, 1) !important;
     }
-    /* Dark theme severity colors */
-    .monaco-hover[data-color-mode="dark"] code {
+
+    /* Dark Mode Styles - TARGETING vs-dark explicitly */
+    .monaco-editor.vs-dark .monaco-hover code,
+    .vs-dark .monaco-hover code,
+    .monaco-hover[data-theme="vs-dark"] code {
       color: rgb(229, 231, 235) !important;
+      background-color: rgba(55, 65, 81, 1) !important;
+      border: 1px solid rgba(75, 85, 99, 1) !important;
     }
+
+    /* Style specific known badges if possible (fallback for general look) */
+    /* Since we can't select by text content in CSS, we use a consistent premium badge style */
+    /* that looks good for all severities */
+
   `;
 }
 

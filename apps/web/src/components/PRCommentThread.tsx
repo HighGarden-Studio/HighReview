@@ -51,7 +51,6 @@ const getReactionEmoji = (content: string): string => {
 
 export function PRCommentThread({
   thread,
-  currentUser,
   onReply,
   onReact,
   onResolve,
@@ -171,7 +170,7 @@ export function PRCommentThread({
 
       {/* Comments */}
       <div className={inline ? "p-3 space-y-2" : "px-4 py-3 space-y-4"}>
-        {thread.comments.map((comment, index) => (
+        {thread.comments.map((comment) => (
           <div key={comment.id} className="flex gap-2">
             {/* Avatar */}
             <img

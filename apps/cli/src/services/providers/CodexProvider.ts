@@ -49,10 +49,13 @@ export class CodexProvider implements AIProvider {
         '--json',                       // JSON output
       ];
 
-      // Add model if specified
-      if (request.model) {
-        args.push('--model', request.model);
-      }
+      // Note: Codex manages models via ~/.codex/config.toml
+      // Do not pass --model parameter as it may conflict with user's config
+
+      // Set max_completion_tokens for longer responses
+      const maxTokens = request.options?.maxTokens || 16384; // Default 16K tokens
+      args.push('-c', `max_completion_tokens=${maxTokens}`);
+      console.log(`[CodexProvider] Using max_completion_tokens: ${maxTokens}`);
 
       console.log('[CodexProvider] Using streaming output');
 
@@ -121,10 +124,13 @@ export class CodexProvider implements AIProvider {
         console.log('[CodexProvider] Using plain text output for conversational mode');
       }
 
-      // Add model if specified
-      if (request.model) {
-        args.push('--model', request.model);
-      }
+      // Note: Codex manages models via ~/.codex/config.toml
+      // Do not pass --model parameter as it may conflict with user's config
+
+      // Set max_completion_tokens for longer responses
+      const maxTokens = request.options?.maxTokens || 16384; // Default 16K tokens
+      args.push('-c', `max_completion_tokens=${maxTokens}`);
+      console.log(`[CodexProvider] Using max_completion_tokens: ${maxTokens}`);
 
       // Call Codex CLI
       const { stdout, stderr } = await execa('codex', args, {

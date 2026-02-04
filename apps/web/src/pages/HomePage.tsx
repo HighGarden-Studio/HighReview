@@ -1,7 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { ThemeToggle } from '../components/ThemeToggle';
-import { LanguageSelector } from '../components/LanguageSelector';
 import { useTheme } from '../contexts/ThemeContext';
 import { useLanguage, languageNames } from '../contexts/LanguageContext';
 
@@ -21,7 +19,7 @@ export function HomePage() {
     },
   });
 
-  const { data: authStatus } = useQuery({
+  useQuery({
     queryKey: ['authStatus'],
     queryFn: async () => {
       const response = await fetch('/api/auth/status');
@@ -31,46 +29,8 @@ export function HomePage() {
   });
 
   return (
-    <div className="min-h-screen transition-colors duration-200 bg-light-bg dark:bg-dark-bg">
-      {/* Header */}
-      <header className="border-b border-light-border dark:border-dark-border bg-light-surface/80 dark:bg-dark-surface/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary flex items-center justify-center text-white font-bold text-lg shadow-lg">
-              H
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-light-text-primary dark:text-dark-text-primary">
-                HighReview
-              </h1>
-              <p className="text-xs text-light-text-muted dark:text-dark-text-muted">
-                Local-first PR Review Tool
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            {authStatus?.authenticated && (
-              <div className="flex items-center gap-3">
-                <div className="text-right">
-                  <p className="text-sm font-medium text-light-text-primary dark:text-dark-text-primary">
-                    {authStatus.user.username}
-                  </p>
-                </div>
-                {authStatus.user.avatarUrl && (
-                  <img
-                    src={authStatus.user.avatarUrl}
-                    alt={authStatus.user.username}
-                    className="w-8 h-8 rounded-full"
-                  />
-                )}
-              </div>
-            )}
-
-            <LanguageSelector />
-            <ThemeToggle />
-          </div>
-        </div>
-      </header>
+    <div className="h-full overflow-y-auto transition-colors duration-200 bg-light-bg dark:bg-dark-bg custom-scrollbar">
+      {/* Header removed - using global AppLayout */}
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-12">

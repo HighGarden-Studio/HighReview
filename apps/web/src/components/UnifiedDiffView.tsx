@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, RefObject, useMemo } from 'react';
+import React, { useState, useRef, RefObject, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { UnifiedFileSection } from './UnifiedFileSection';
 import { useFileIntersection } from '../hooks/useFileIntersection';
@@ -51,7 +51,6 @@ export function UnifiedDiffView({
   repoRoot,
   owner,
   repo,
-  prNumber,
   headRef,
   aiReviewData,
   onFileInView,
@@ -59,7 +58,7 @@ export function UnifiedDiffView({
   onAddComment,
 }: UnifiedDiffViewProps) {
   const [fileRefs] = useState<Map<string, RefObject<HTMLDivElement>>>(
-    () => new Map(files.map(f => [f.path, { current: null }]))
+    () => new Map(files.map(f => [f.path, React.createRef<HTMLDivElement>() as any]))
   );
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);

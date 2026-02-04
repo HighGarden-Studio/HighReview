@@ -1,4 +1,5 @@
 import type { AIProvider, AIReviewRequest, AIReviewResponse } from './AIProvider.js';
+import { ReviewResponseSchema } from './ReviewSchema.js';
 
 /**
  * LM Studio Provider
@@ -62,7 +63,7 @@ export class LMStudioProvider implements AIProvider {
           model: request.model || 'local-model',
           messages: [{ role: 'user', content: request.prompt }],
           temperature: 0.3,
-          max_tokens: 32768,
+          max_tokens: 16384,
           stream: true, // Enable streaming
         }),
         signal: AbortSignal.timeout(request.timeout || 300000),
@@ -220,69 +221,14 @@ IMPORTANT: Each issue MUST have "file", "line", "message", "severity", "category
         ],
         temperature: 0.3,
         stream: false,
-        max_tokens: 32768,
+        max_tokens: 16384,
         // Force JSON output using OpenAI-compatible response_format
         response_format: {
           type: 'json_schema',
           json_schema: {
             name: 'code_review',
             strict: true,
-            schema: {
-              type: 'object',
-              properties: {
-                summary: { type: 'string' },
-                criticalIssues: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      file: { type: 'string' },
-                      line: { type: 'integer' },
-                      message: { type: 'string' },
-                      severity: { type: 'string' },
-                      category: { type: 'string' }
-                    },
-                    required: ['file', 'line', 'message', 'severity', 'category'],
-                    additionalProperties: false
-                  }
-                },
-                warnings: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      file: { type: 'string' },
-                      line: { type: 'integer' },
-                      message: { type: 'string' },
-                      severity: { type: 'string' },
-                      category: { type: 'string' }
-                    },
-                    required: ['file', 'line', 'message', 'severity', 'category'],
-                    additionalProperties: false
-                  }
-                },
-                suggestions: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      file: { type: 'string' },
-                      line: { type: 'integer' },
-                      message: { type: 'string' },
-                      severity: { type: 'string' },
-                      category: { type: 'string' }
-                    },
-                    required: ['file', 'line', 'message', 'severity', 'category'],
-                    additionalProperties: false
-                  }
-                },
-                // Optional enhanced sections
-                changeIntents: { type: 'array' },
-                callStacks: { type: 'array' },
-                impactAnalysis: { type: 'object' }
-              },
-              required: ['summary', 'criticalIssues', 'warnings', 'suggestions']
-            }
+            schema: ReviewResponseSchema,
           }
         }
       };

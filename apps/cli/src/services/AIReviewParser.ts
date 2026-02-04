@@ -13,6 +13,7 @@ interface ChangeIntent {
 interface CallStackInfo {
   function: string;
   file: string;
+  callers?: string[];
   flowchart?: string;
   sequence?: string;
 }
@@ -94,23 +95,58 @@ export class AIReviewParser {
 
       // Extract mermaid flowchart
       const flowchartMatch = /```mermaid\s*\n(graph[^\n]*[\s\S]*?)```/i.exec(content);
-      const flowchart = flowchartMatch ? flowchartMatch[1].trim() : undefined;
+      let flowchart = flowchartMatch ? flowchartMatch[1].trim() : undefined;
 
       // Extract mermaid sequence diagram
       const sequenceMatch = /```mermaid\s*\n(sequenceDiagram[\s\S]*?)```/i.exec(content);
-      const sequence = sequenceMatch ? sequenceMatch[1].trim() : undefined;
+      let sequence = sequenceMatch ? sequenceMatch[1].trim() : undefined;
+
+      // Fallback: If not matched by markdown blocks, try to find raw mermaid syntax
+      if (!flowchart) {
+        const rawFlowchartMatch = /(graph (?:TD|LR|BT|RL)[\s\S]*?)(?=\n\n|\n\*\*Function|$)/i.exec(content);
+        if (rawFlowchartMatch) flowchart = rawFlowchartMatch[1].trim();
+      }
+      if (!sequence) {
+        const rawSequenceMatch = /(sequenceDiagram[\s\S]*?)(?=\n\n|\n\*\*Function|$)/i.exec(content);
+        if (rawSequenceMatch) sequence = rawSequenceMatch[1].trim();
+      }
+
+      // Extract callers if listed
+      const callersMatch = /Callers?:\s*\[([^\]]+)\]/i.exec(content);
+      const callers = callersMatch 
+        ? callersMatch[1].split(',').map(s => s.trim().replace(/['"`]/g, '')) 
+        : undefined;
 
       if (flowchart || sequence) {
         callStacks.push({
           function: functionName,
           file: fileName,
-          flowchart,
-          sequence,
+          callers,
+          flowchart: this.normalizeMermaid(flowchart),
+          sequence: this.normalizeMermaid(sequence),
         });
       }
     }
 
     return callStacks;
+  }
+
+  /**
+   * Normalize mermaid code by removing markdown blocks if present
+   */
+  static normalizeMermaid(code?: string): string | undefined {
+    if (!code) return undefined;
+
+    let normalized = code.trim();
+
+    // Remove opening ```mermaid
+    normalized = normalized.replace(/^```mermaid\s*\n/i, '');
+    normalized = normalized.replace(/^```\w*\n/, ''); // Generic code block
+
+    // Remove closing ```
+    normalized = normalized.replace(/\n?```$/m, '');
+
+    return normalized.trim();
   }
 
   /**

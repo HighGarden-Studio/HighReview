@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Toaster } from 'react-hot-toast';
 import { LoginPage } from './pages/LoginPage';
@@ -7,8 +7,10 @@ import { PRListPage } from './pages/PRListPage';
 import { PRDetailPage } from './pages/PRDetailPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AppLayout } from './components/AppLayout';
 
 function ReviewPageWrapper() {
+  const { owner, repo, number } = useParams<{ owner: string; repo: string; number: string }>();
   const location = useLocation();
   const state = location.state as {
     worktreePath: string;
@@ -19,19 +21,56 @@ function ReviewPageWrapper() {
     aiReviewOptions?: any;
   } | null;
 
-  if (!state || !state.worktreePath) {
+  // Query to setup/fetch review data if state is missing
+  const { data: reviewData, isLoading, error } = useQuery({
+    queryKey: ['reviewSetup', owner, repo, number],
+    queryFn: async () => {
+      if (state?.worktreePath) return state; // Use state if available
+      if (!owner || !repo || !number) throw new Error('Missing parameters');
+
+      const response = await fetch(`/api/prs/${owner}/${repo}/${number}/setup-review`, {
+        method: 'POST', // Only creating setup if needed, or getting existing
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to setup review environment');
+      }
+      
+      return response.json();
+    },
+    enabled: !!owner && !!repo && !!number,
+    initialData: state ? state : undefined,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-light-bg dark:bg-dark-bg">
+        <div className="flex flex-col items-center gap-3">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          <p className="text-light-text-secondary dark:text-dark-text-secondary">
+            Preparing review environment...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !reviewData) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-light-bg dark:bg-dark-bg">
         <div className="text-center">
-          <p className="text-light-text-primary dark:text-dark-text-primary text-lg mb-2">
-            Invalid review session
+          <p className="text-red-500 text-lg mb-2">
+            Failed to load review session
           </p>
           <p className="text-light-text-secondary dark:text-dark-text-secondary text-sm">
-            Please start a review from a pull request.
+            {(error as Error)?.message || 'Unknown error'}
           </p>
-          <p className="text-light-text-muted dark:text-dark-text-muted text-xs mt-4">
-            Debug: state = {JSON.stringify(state)}
-          </p>
+          <button 
+            onClick={() => window.location.href = `/prs/${owner}/${repo}/${number}`}
+            className="mt-4 px-4 py-2 bg-primary text-white rounded hover:bg-primary/90"
+          >
+            Return to PR Detail
+          </button>
         </div>
       </div>
     );
@@ -39,12 +78,15 @@ function ReviewPageWrapper() {
 
   return (
     <ReviewPage
-      worktreePath={state.worktreePath}
-      baseBranch={state.baseBranch}
-      repoRoot={state.repoRoot}
-      initialFilePath={state.initialFilePath}
-      commentInfo={state.commentInfo}
-      aiReviewOptions={state.aiReviewOptions}
+      worktreePath={reviewData.worktreePath}
+      baseBranch={reviewData.baseBranch || 'main'} // Fallback if API response structure varies
+      repoRoot={reviewData.repoRoot} // Ensure API returns this
+      initialFilePath={state?.initialFilePath} // Keep specific state params if they exist (though on direct load they wont)
+      commentInfo={state?.commentInfo}
+      aiReviewOptions={state?.aiReviewOptions}
+      owner={owner || ''}
+      repo={repo || ''}
+      prNumber={number || '0'}
     />
   );
 }
@@ -73,6 +115,8 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   return <>{children}</>;
 }
+
+// ... (keep ReviewPageWrapper and ProtectedRoute)
 
 function App() {
   return (
@@ -106,7 +150,9 @@ function App() {
           path="/"
           element={
             <ProtectedRoute>
-              <HomePage />
+              <AppLayout>
+                <HomePage />
+              </AppLayout>
             </ProtectedRoute>
           }
         />
@@ -114,7 +160,9 @@ function App() {
           path="/prs"
           element={
             <ProtectedRoute>
-              <PRListPage />
+              <AppLayout>
+                <PRListPage />
+              </AppLayout>
             </ProtectedRoute>
           }
         />
@@ -122,15 +170,19 @@ function App() {
           path="/prs/:owner/:repo/:number"
           element={
             <ProtectedRoute>
-              <PRDetailPage />
+              <AppLayout>
+                <PRDetailPage />
+              </AppLayout>
             </ProtectedRoute>
           }
         />
         <Route
-          path="/review"
+          path="/review/:owner/:repo/:number"
           element={
             <ProtectedRoute>
-              <ReviewPageWrapper />
+              <AppLayout>
+                <ReviewPageWrapper />
+              </AppLayout>
             </ProtectedRoute>
           }
         />
@@ -138,7 +190,9 @@ function App() {
           path="/settings"
           element={
             <ProtectedRoute>
-              <SettingsPage />
+              <AppLayout>
+                <SettingsPage />
+              </AppLayout>
             </ProtectedRoute>
           }
         />

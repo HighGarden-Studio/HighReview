@@ -37,7 +37,7 @@ export function CommentForm({
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [onCancel]);
 
-  const handleSubmit = (addToReview: boolean) => {
+  const handleSubmit = (_addToReview: boolean) => {
     if (!body.trim()) return;
     onSubmit(body);
   };

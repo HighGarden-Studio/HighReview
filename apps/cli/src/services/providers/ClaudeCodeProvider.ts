@@ -1,5 +1,6 @@
 import { execa } from 'execa';
 import type { AIProvider, AIReviewRequest, AIReviewResponse } from './AIProvider.js';
+import { ReviewResponseSchema } from './ReviewSchema.js';
 
 /**
  * Claude Code Provider
@@ -49,10 +50,8 @@ export class ClaudeCodeProvider implements AIProvider {
         '--print',                      // Non-interactive mode
       ];
 
-      // Add model if specified
-      if (request.model) {
-        args.push('--model', request.model);
-      }
+      // Note: Claude Code manages models via its own configuration
+      // Do not pass --model parameter as it may conflict with user's config
 
       console.log('[ClaudeCodeProvider] Using plain text streaming output');
 
@@ -114,118 +113,7 @@ export class ClaudeCodeProvider implements AIProvider {
       // Only use structured output for code review requests
       if (isCodeReview) {
         // JSON Schema for structured output
-        const jsonSchema = {
-          type: 'object',
-          properties: {
-            summary: { type: 'string', description: 'Brief overview of the review' },
-            criticalIssues: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  file: { type: 'string' },
-                  line: { type: 'number' },
-                  severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
-                  category: { type: 'string' },
-                  message: { type: 'string' },
-                  suggestion: { type: 'string' },
-                },
-                required: ['file', 'line', 'severity', 'category', 'message'],
-              },
-            },
-            warnings: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  file: { type: 'string' },
-                  line: { type: 'number' },
-                  severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
-                  category: { type: 'string' },
-                  message: { type: 'string' },
-                  suggestion: { type: 'string' },
-                },
-                required: ['file', 'line', 'severity', 'category', 'message'],
-              },
-            },
-            suggestions: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  file: { type: 'string' },
-                  line: { type: 'number' },
-                  severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
-                  category: { type: 'string' },
-                  message: { type: 'string' },
-                  suggestion: { type: 'string' },
-                },
-                required: ['file', 'line', 'severity', 'category', 'message'],
-              },
-            },
-            changeIntents: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  file: { type: 'string' },
-                  level: { type: 'string', enum: ['file', 'block'] },
-                  intent: { type: 'string' },
-                  motivation: { type: 'string' },
-                  impact: { type: 'string' },
-                },
-                required: ['file', 'level', 'intent', 'motivation'],
-              },
-            },
-            callStacks: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  function: { type: 'string' },
-                  file: { type: 'string' },
-                  flowchart: { type: 'string' },
-                  sequence: { type: 'string' },
-                },
-                required: ['function', 'file'],
-              },
-            },
-            impactAnalysis: {
-              type: 'object',
-              properties: {
-                scope: { type: 'string' },
-                affectedAreas: { type: 'array', items: { type: 'string' } },
-                breakingChanges: { type: 'array', items: { type: 'string' } },
-                sideEffects: { type: 'array', items: { type: 'string' } },
-              },
-            },
-            movedCode: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  from: { type: 'string' },
-                  to: { type: 'string' },
-                  lines: { type: 'number' },
-                },
-                required: ['from', 'to', 'lines'],
-              },
-            },
-            refactorings: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  type: { type: 'string' },
-                  description: { type: 'string' },
-                  files: { type: 'array', items: { type: 'string' } },
-                },
-                required: ['type', 'description', 'files'],
-              },
-            },
-          },
-          required: ['summary', 'criticalIssues', 'warnings', 'suggestions'],
-        };
+        const jsonSchema = ReviewResponseSchema;
 
         args.push('--output-format', 'json');      // JSON output for structured parsing
         args.push('--json-schema', JSON.stringify(jsonSchema)); // Enforce schema validation
@@ -234,10 +122,8 @@ export class ClaudeCodeProvider implements AIProvider {
         console.log('[ClaudeCodeProvider] Using plain text output for conversational mode');
       }
 
-      // Add model if specified
-      if (request.model) {
-        args.push('--model', request.model);
-      }
+      // Note: Claude Code manages models via its own configuration
+      // Do not pass --model parameter as it may conflict with user's config
 
       // Call Claude Code CLI
       const { stdout, stderr } = await execa('claude', args, {

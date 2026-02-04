@@ -46,7 +46,7 @@ export function Toast({ message, type = 'info', onClose, duration = 5000 }: Toas
   };
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 animate-in slide-in-from-bottom-5">
+    <div className="fixed bottom-4 right-4 z-[100] animate-in slide-in-from-bottom-5">
       <div className={`${bgColors[type]} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 min-w-[300px] max-w-[500px]`}>
         {icons[type]}
         <span className="flex-1">{message}</span>

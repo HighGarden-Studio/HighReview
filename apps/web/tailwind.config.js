@@ -46,8 +46,23 @@ export default {
             error: '#f87171',       // red-400
           }
         }
+      },
+      animation: {
+        'scanner': 'scanner 3s ease-in-out infinite',
+        'slow-spin': 'spin 3s linear infinite',
+        'reverse-spin': 'reverse-spin 2s linear infinite',
+      },
+      keyframes: {
+        scanner: {
+          '0%, 100%': { transform: 'translateY(-30px)', opacity: '0' },
+          '50%': { transform: 'translateY(30px)', opacity: '1' },
+        },
+        'reverse-spin': {
+          from: { transform: 'rotate(360deg)' },
+          to: { transform: 'rotate(0deg)' },
+        }
       }
-    },
+    }
   },
   plugins: [
     require('@tailwindcss/typography'),

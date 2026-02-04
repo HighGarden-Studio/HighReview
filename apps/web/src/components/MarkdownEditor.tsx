@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
-import { useTheme } from '../contexts/ThemeContext';
+
 
 interface MarkdownEditorProps {
   value: string;
@@ -27,7 +27,7 @@ export function MarkdownEditor({
   hideToolbar = false,
   className = '',
 }: MarkdownEditorProps) {
-  const { theme } = useTheme();
+
   const [activeTab, setActiveTab] = useState<'write' | 'preview'>(preview === 'preview' ? 'preview' : 'write');
 
   // Calculate effective height

@@ -13,7 +13,7 @@ export function useFileIntersection(
   const { threshold = 0.3, debounceMs = 150 } = options;
 
   useEffect(() => {
-    let debounceTimeout: NodeJS.Timeout;
+    let debounceTimeout: any;
     let lastInViewFile: string | null = null;
 
     const observerCallback = (entries: IntersectionObserverEntry[]) => {

@@ -25,6 +25,11 @@ interface PRCardProps {
     commentCount?: number;
     reviewCount?: number;
     fileCount?: number;
+    labels?: {
+      name: string;
+      color: string;
+      description: string;
+    }[];
   };
 }
 
@@ -100,6 +105,26 @@ export function PRCard({ pr }: PRCardProps) {
             AI Reviewed
           </span>
         )}
+        {/* Labels */}
+        {pr.labels && pr.labels.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {pr.labels.map((label) => (
+              <span
+                key={label.name}
+                className="px-2 py-0.5 text-xs font-bold rounded-full border shadow-sm transition-opacity hover:opacity-80"
+                style={{
+                  backgroundColor: `#${label.color}20`,
+                  borderColor: `#${label.color}40`,
+                  color: isDarkMode ? `#${label.color}` : `color-mix(in srgb, #${label.color}, black 20%)`,
+                }}
+                title={label.description}
+              >
+                {label.name}
+              </span>
+            ))}
+          </div>
+        )}
+
         <div className="ml-auto flex items-center gap-2">
           <a
             href={pr.url}
@@ -117,7 +142,7 @@ export function PRCard({ pr }: PRCardProps) {
           <span
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg ${
               pr.state === 'OPEN'
-                ? 'bg-light-accent-success dark:bg-dark-accent-success text-white shadow-sm'
+                ? 'bg-light-accent-success/10 dark:bg-dark-accent-success/10 text-light-accent-success dark:text-dark-accent-success border border-light-accent-success/20 dark:border-dark-accent-success/20 shadow-sm'
                 : 'bg-light-surface-elevated dark:bg-dark-surface-elevated text-light-text-muted dark:text-dark-text-muted border border-light-border dark:border-dark-border'
             }`}
           >

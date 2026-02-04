@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { PRCard } from '../components/PRCard';
-import { ThemeToggle } from '../components/ThemeToggle';
-import { LanguageSelector } from '../components/LanguageSelector';
+import { Scanner } from '../components/Scanner';
+
+
 
 export function PRListPage() {
   const navigate = useNavigate();
@@ -53,7 +54,7 @@ export function PRListPage() {
     enabled: filter === 'authored',
   });
 
-  const { data: authStatus } = useQuery({
+  useQuery({
     queryKey: ['authStatus'],
     queryFn: async () => {
       const response = await fetch('/api/auth/status');
@@ -90,7 +91,7 @@ export function PRListPage() {
       }, {})
     : {};
 
-  const sortedRepos = Object.entries(repositories).sort((a, b) => b[1] - a[1]);
+  const sortedRepos = Object.entries(repositories).sort((a, b) => (b[1] as number) - (a[1] as number));
 
   // Filter PRs by selected repository
   const filteredPRs = currentData?.pullRequests.filter((pr: any) =>
@@ -98,47 +99,9 @@ export function PRListPage() {
   ) || [];
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg">
-      {/* Header */}
-      <header className="border-b border-light-border dark:border-dark-border bg-light-surface/80 dark:bg-dark-surface/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div
-              className="flex items-center gap-3 cursor-pointer"
-              onClick={() => navigate('/')}
-            >
-              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-light-accent-primary to-light-accent-secondary dark:from-dark-accent-primary dark:to-dark-accent-secondary flex items-center justify-center text-white font-bold text-lg shadow-lg">
-                H
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-light-text-primary dark:text-dark-text-primary">
-                  HighReview
-                </h1>
-                <p className="text-xs text-light-text-muted dark:text-dark-text-muted">
-                  Pull Requests
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {authStatus?.authenticated && (
-              <div className="flex items-center gap-3">
-                <div className="text-right">
-                  <p className="text-sm font-medium text-light-text-primary dark:text-dark-text-primary">
-                    {authStatus.user.username}
-                  </p>
-                </div>
-              </div>
-            )}
-            <LanguageSelector />
-            <ThemeToggle />
-          </div>
-        </div>
-      </header>
-
+    <div className="h-full overflow-y-auto bg-light-bg dark:bg-dark-bg p-4">
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-8">
+      <main className="container mx-auto py-4">
         {/* Filter Tabs */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex gap-2">
@@ -149,13 +112,17 @@ export function PRListPage() {
               }}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                 filter === 'review-requested'
-                  ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
-                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+                  ? 'bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary border border-light-accent-primary/20 dark:border-dark-accent-primary/20'
+                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated border border-transparent'
               }`}
             >
               Review Requested
               {reviewRequestedData && (
-                <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
+                <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+                  filter === 'review-requested'
+                    ? 'bg-light-accent-primary/20 dark:bg-dark-accent-primary/20 text-light-accent-primary dark:text-dark-accent-primary'
+                    : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
+                }`}>
                   {reviewRequestedData.count}
                 </span>
               )}
@@ -167,13 +134,17 @@ export function PRListPage() {
               }}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                 filter === 'my-repos'
-                  ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
-                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+                  ? 'bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary border border-light-accent-primary/20 dark:border-dark-accent-primary/20'
+                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated border border-transparent'
               }`}
             >
               My Repositories
               {myReposData && (
-                <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
+                <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+                  filter === 'my-repos'
+                    ? 'bg-light-accent-primary/20 dark:bg-dark-accent-primary/20 text-light-accent-primary dark:text-dark-accent-primary'
+                    : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
+                }`}>
                   {myReposData.count}
                 </span>
               )}
@@ -185,13 +156,17 @@ export function PRListPage() {
               }}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                 filter === 'authored'
-                  ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
-                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
+                  ? 'bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary border border-light-accent-primary/20 dark:border-dark-accent-primary/20'
+                  : 'bg-light-surface dark:bg-dark-surface text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated border border-transparent'
               }`}
             >
               My PRs
               {authoredData && (
-                <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
+                <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+                  filter === 'authored'
+                    ? 'bg-light-accent-primary/20 dark:bg-dark-accent-primary/20 text-light-accent-primary dark:text-dark-accent-primary'
+                    : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
+                }`}>
                   {authoredData.count}
                 </span>
               )}
@@ -239,7 +214,7 @@ export function PRListPage() {
                           }}
                           className={`w-full text-left px-3 py-2 rounded-md transition-colors flex items-center justify-between ${
                             selectedRepo === 'all'
-                              ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
+                              ? 'bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary'
                               : 'text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
                           }`}
                         >
@@ -251,7 +226,7 @@ export function PRListPage() {
                           </div>
                           <span className={`px-2 py-0.5 text-xs rounded-full font-semibold ${
                             selectedRepo === 'all'
-                              ? 'bg-white/20'
+                              ? 'bg-light-accent-primary/20 dark:bg-dark-accent-primary/20'
                               : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
                           }`}>
                             {currentData?.count || 0}
@@ -271,7 +246,7 @@ export function PRListPage() {
                             }}
                             className={`w-full text-left px-3 py-2 rounded-md transition-colors flex items-center justify-between ${
                               selectedRepo === repo
-                                ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
+                                ? 'bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 text-light-accent-primary dark:text-dark-accent-primary'
                                 : 'text-light-text-primary dark:text-dark-text-primary hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated'
                             }`}
                           >
@@ -283,10 +258,10 @@ export function PRListPage() {
                             </div>
                             <span className={`px-2 py-0.5 text-xs rounded-full font-semibold flex-shrink-0 ml-2 ${
                               selectedRepo === repo
-                                ? 'bg-white/20'
+                                ? 'bg-light-accent-primary/20 dark:bg-dark-accent-primary/20'
                                 : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
                             }`}>
-                              {count}
+                              {count as any}
                             </span>
                           </button>
                         ))}
@@ -323,15 +298,13 @@ export function PRListPage() {
 
         {/* PR List */}
         {isLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="text-center">
-              <div className="w-12 h-12 border-4 border-light-accent-primary dark:border-dark-accent-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-              <p className="text-light-text-secondary dark:text-dark-text-secondary">
-                Loading pull requests...
-              </p>
-            </div>
+          <div className="flex flex-col items-center justify-center py-24">
+            <Scanner 
+              label="Loading pull requests..." 
+            />
           </div>
         ) : filteredPRs.length > 0 ? (
+
           <div className="space-y-4">
             {filteredPRs.map((pr: any) => (
               <PRCard key={`${pr.repository}-${pr.number}`} pr={pr} />

@@ -26,6 +26,18 @@ export interface AIReviewOptions {
 
   // Custom prompt
   customPrompt: string;
+
+  // Model configuration
+  model?: string;
+  candidateCount?: number;
+  temperature?: number;
+
+  // Feature flags
+  changeIntents?: boolean;
+  callStackAnalysis?: boolean;
+  impactAnalysis?: boolean;
+  semanticAnalysis?: boolean;
+  securityAnalysis?: boolean;
 }
 
 interface AIReviewOptionsModalProps {

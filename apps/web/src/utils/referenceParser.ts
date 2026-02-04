@@ -3,7 +3,7 @@
  * Supports: @file, @issue, @change, @impact, @semantic
  */
 
-export type ReferenceType = 'file' | 'issue' | 'change' | 'impact' | 'semantic';
+export type ReferenceType = 'file' | 'issue' | 'change' | 'impact' | 'semantic' | 'refactor' | 'callstack';
 
 export interface BaseReference {
   raw: string; // Original reference string
@@ -37,7 +37,24 @@ export interface SemanticReference extends BaseReference {
   semanticId: string;
 }
 
-export type Reference = FileReference | IssueReference | ChangeReference | ImpactReference | SemanticReference;
+export interface RefactorReference extends BaseReference {
+  type: 'refactor';
+  refactorId: string;
+}
+
+export interface CallStackReference extends BaseReference {
+  type: 'callstack';
+  stackId: string;
+}
+
+export type Reference =
+  | FileReference
+  | IssueReference
+  | ChangeReference
+  | ImpactReference
+  | SemanticReference
+  | RefactorReference
+  | CallStackReference;
 
 export interface ResolvedReference {
   reference: Reference;
@@ -53,19 +70,19 @@ export function parseReferences(message: string): Reference[] {
   const references: Reference[] = [];
 
   // Pattern: @type:value or @type:value:extra
-  // Examples:
-  // - @file:src/utils/parser.ts:50-100
-  // - @issue:5
-  // - @change:2
-  // - @impact:0
-  // - @semantic:1
-  const regex = /@(file|issue|change|impact|semantic):([^\s]+)/g;
+  // Supports quotes for values with spaces: @file:"path with space.ts"
+  const regex = /@(file|issue|change|impact|semantic|refactor|callstack):((?:"[^"]+")|[^\s]+)/gi;
   let match;
 
   while ((match = regex.exec(message)) !== null) {
     const raw = match[0];
-    const type = match[1] as ReferenceType;
-    const value = match[2];
+    const type = match[1].toLowerCase() as ReferenceType;
+    let value = match[2];
+
+    // Strip quotes if present
+    if (value.startsWith('"') && value.endsWith('"')) {
+      value = value.substring(1, value.length - 1);
+    }
 
     if (type === 'file') {
       // Parse file reference: path:line or path:startLine-endLine
@@ -79,11 +96,14 @@ export function parseReferences(message: string): Reference[] {
         const lineSpec = value.substring(colonIndex + 1);
 
         if (lineSpec.includes('-')) {
-          const [start, end] = lineSpec.split('-').map(s => parseInt(s, 10));
+          const [start, end] = lineSpec.split('-').map((s) => parseInt(s, 10));
           lineStart = start;
           lineEnd = end;
         } else {
-          lineStart = parseInt(lineSpec, 10);
+          const line = parseInt(lineSpec, 10);
+          if (!isNaN(line)) {
+            lineStart = line;
+          }
         }
       }
 
@@ -118,6 +138,18 @@ export function parseReferences(message: string): Reference[] {
         type: 'semantic',
         semanticId: value,
       } as SemanticReference);
+    } else if (type === 'refactor') {
+      references.push({
+        raw,
+        type: 'refactor',
+        refactorId: value,
+      } as RefactorReference);
+    } else if (type === 'callstack') {
+      references.push({
+        raw,
+        type: 'callstack',
+        stackId: value,
+      } as CallStackReference);
     }
   }
 
@@ -154,11 +186,13 @@ export async function resolveReferences(
   const issueRefs = references.filter(r => r.type === 'issue') as IssueReference[];
   const changeRefs = references.filter(r => r.type === 'change') as ChangeReference[];
   const impactRefs = references.filter(r => r.type === 'impact') as ImpactReference[];
-  const semanticRefs = references.filter(r => r.type === 'semantic') as SemanticReference[];
+  const semanticRefs = references.filter((r) => r.type === 'semantic') as SemanticReference[];
+  const refactorRefs = references.filter((r) => r.type === 'refactor') as RefactorReference[];
+  const callstackRefs = references.filter((r) => r.type === 'callstack') as CallStackReference[];
 
   // Resolve file references
   if (fileRefs.length > 0) {
-    const uniqueFilePaths = [...new Set(fileRefs.map(ref => ref.filePath))];
+    const uniqueFilePaths = Array.from(new Set(fileRefs.map(ref => ref.filePath)));
 
     try {
       const response = await fetch('/api/ai/read-files', {
@@ -172,7 +206,7 @@ export async function resolveReferences(
 
       if (response.ok) {
         const result = await response.json();
-        const filesMap = new Map(
+        const filesMap = new Map<string, { content: string; exists: boolean }>(
           result.files.map((f: any) => [f.path, { content: f.content, exists: f.exists }])
         );
 
@@ -210,7 +244,7 @@ export async function resolveReferences(
   // Resolve issue references
   if (issueRefs.length > 0 && aiReviewData?.issues) {
     for (const ref of issueRefs) {
-      const issueIndex = parseInt(ref.issueId, 10);
+      const issueIndex = parseInt(ref.issueId, 10) - 1; // 1-based to 0-based
       const issue = aiReviewData.issues[issueIndex];
 
       if (issue) {
@@ -223,14 +257,14 @@ ${issue.suggestion ? `**Suggestion:** ${issue.suggestion}` : ''}`;
         resolved.push({
           reference: ref,
           content,
-          title: `Issue #${issueIndex}: ${issue.category}`,
+          title: `Issue #${issueIndex + 1}: ${issue.category}`,
           exists: true,
         });
       } else {
         resolved.push({
           reference: ref,
           content: '',
-          title: `Issue #${issueIndex}`,
+          title: `Issue #${ref.issueId}`,
           exists: false,
         });
       }
@@ -240,7 +274,7 @@ ${issue.suggestion ? `**Suggestion:** ${issue.suggestion}` : ''}`;
   // Resolve change intent references
   if (changeRefs.length > 0 && aiReviewData?.changeIntents) {
     for (const ref of changeRefs) {
-      const changeIndex = parseInt(ref.changeId, 10);
+      const changeIndex = parseInt(ref.changeId, 10) - 1; // 1-based to 0-based
       const change = aiReviewData.changeIntents[changeIndex];
 
       if (change) {
@@ -253,14 +287,14 @@ ${change.impact ? `**Impact:** ${change.impact}` : ''}`;
         resolved.push({
           reference: ref,
           content,
-          title: `Change #${changeIndex}: ${change.intent}`,
+          title: `Change #${changeIndex + 1}: ${change.intent}`,
           exists: true,
         });
       } else {
         resolved.push({
           reference: ref,
           content: '',
-          title: `Change #${changeIndex}`,
+          title: `Change #${ref.changeId}`,
           exists: false,
         });
       }
@@ -270,6 +304,8 @@ ${change.impact ? `**Impact:** ${change.impact}` : ''}`;
   // Resolve impact references
   if (impactRefs.length > 0 && aiReviewData?.impactAnalysis) {
     for (const ref of impactRefs) {
+      // Simply resolve impact analysis regardless of ID (as there is only one global impact analysis)
+      // expecting user to use @impact:1 but just robustly handling existence
       const impact = aiReviewData.impactAnalysis;
       const content = `**Scope:** ${impact.scope || 'N/A'}
 **Affected Areas:** ${impact.affectedAreas?.join(', ') || 'None'}
@@ -285,28 +321,86 @@ ${change.impact ? `**Impact:** ${change.impact}` : ''}`;
     }
   }
 
-  // Resolve semantic references
-  if (semanticRefs.length > 0 && aiReviewData?.semanticInfo) {
-    for (const ref of semanticRefs) {
-      const semanticIndex = parseInt(ref.semanticId, 10);
-      const semantic = aiReviewData.semanticInfo[semanticIndex];
+  // Resolve callstack references
+  if (callstackRefs.length > 0 && aiReviewData?.callStacks) {
+    for (const ref of callstackRefs) {
+      const stackIndex = parseInt(ref.stackId, 10) - 1; // 1-based to 0-based
+      const stack = aiReviewData.callStacks[stackIndex];
 
-      if (semantic) {
-        const content = `**Type:** ${semantic.type}
-**Description:** ${semantic.description}
-${semantic.details ? `**Details:** ${semantic.details}` : ''}`;
+      if (stack) {
+        const content = `**Function:** ${stack.function}
+**File:** ${stack.file}
+**Stack Trace:**
+${stack.stack?.map((s: string) => `- ${s}`).join('\n') || 'N/A'}`;
 
         resolved.push({
           reference: ref,
           content,
-          title: `Semantic #${semanticIndex}`,
+          title: `Call Stack #${stackIndex + 1}: ${stack.function}`,
           exists: true,
         });
       } else {
         resolved.push({
           reference: ref,
           content: '',
-          title: `Semantic #${semanticIndex}`,
+          title: `Call Stack #${ref.stackId}`,
+          exists: false,
+        });
+      }
+    }
+  }
+
+  // Resolve semantic references (Moved Code)
+  if (semanticRefs.length > 0 && aiReviewData?.movedCode) {
+    for (const ref of semanticRefs) {
+      const semanticIndex = parseInt(ref.semanticId, 10) - 1; // 1-based to 0-based
+      const moved = aiReviewData.movedCode[semanticIndex];
+
+      if (moved) {
+        const content = `**Type:** Moved Code
+**From:** ${moved.from}
+**To:** ${moved.to}
+**Lines:** ${moved.lines}`;
+
+        resolved.push({
+          reference: ref,
+          content,
+          title: `Moved Code #${semanticIndex + 1}`,
+          exists: true,
+        });
+      } else {
+        resolved.push({
+          reference: ref,
+          content: '',
+          title: `Semantic #${ref.semanticId}`,
+          exists: false,
+        });
+      }
+    }
+  }
+
+  // Resolve refactor references
+  if (refactorRefs.length > 0 && aiReviewData?.refactorings) {
+    for (const ref of refactorRefs) {
+      const refactorIndex = parseInt(ref.refactorId, 10) - 1; // 1-based to 0-based
+      const refactor = aiReviewData.refactorings[refactorIndex];
+
+      if (refactor) {
+        const content = `**Type:** ${refactor.type}
+**Description:** ${refactor.description}
+**Files:** ${refactor.files.join(', ')}`;
+
+        resolved.push({
+          reference: ref,
+          content,
+          title: `Refactoring #${refactorIndex + 1}: ${refactor.type}`,
+          exists: true,
+        });
+      } else {
+        resolved.push({
+          reference: ref,
+          content: '',
+          title: `Refactor #${ref.refactorId}`,
           exists: false,
         });
       }
@@ -320,7 +414,7 @@ ${semantic.details ? `**Details:** ${semantic.details}` : ''}`;
  * Remove references from message text
  */
 export function stripReferences(message: string): string {
-  return message.replace(/@(file|issue|change|impact|semantic):[^\s]+/g, '').trim();
+  return message.replace(/@(file|issue|change|impact|semantic|callstack):(?:(?:"[^"]+")|[^\s]+)/gi, '').trim();
 }
 
 /**

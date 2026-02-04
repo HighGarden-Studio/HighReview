@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 
 export interface MentionSuggestion {
-  type: 'file' | 'issue' | 'change' | 'impact' | 'callstack' | 'semantic';
+  type: 'file' | 'issue' | 'change' | 'impact' | 'callstack' | 'semantic' | 'refactor';
   id: string;
   label: string;
   description?: string;
@@ -13,7 +13,6 @@ interface MentionAutocompleteProps {
   suggestions: MentionSuggestion[];
   onSelect: (suggestion: MentionSuggestion) => void;
   onClose: () => void;
-  position: { top: number; left: number };
 }
 
 export function MentionAutocomplete({
@@ -21,7 +20,6 @@ export function MentionAutocomplete({
   suggestions,
   onSelect,
   onClose,
-  position,
 }: MentionAutocompleteProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -85,8 +83,8 @@ export function MentionAutocomplete({
   if (filteredSuggestions.length === 0) {
     return (
       <div
-        className="fixed z-50 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg p-3"
-        style={{ top: position.top, left: position.left }}
+        className="absolute bottom-full left-0 mb-2 z-50 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg p-3 w-full"
+        style={{ minWidth: '300px' }}
       >
         <p className="text-sm text-light-text-muted dark:text-dark-text-muted">
           No suggestions found
@@ -98,8 +96,8 @@ export function MentionAutocomplete({
   return (
     <div
       ref={containerRef}
-      className="fixed z-50 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg max-h-64 overflow-y-auto"
-      style={{ top: position.top, left: position.left, minWidth: '300px' }}
+      className={`absolute bottom-full left-0 mb-2 z-50 bg-light-surface dark:bg-dark-surface border border-light-border dark:border-dark-border rounded-lg shadow-lg max-h-64 overflow-y-auto w-full`}
+      style={{ minWidth: '300px' }}
     >
       {filteredSuggestions.map((suggestion, index) => (
         <button
@@ -155,6 +153,8 @@ function getTypeIcon(type: MentionSuggestion['type']): string {
       return '📊';
     case 'semantic':
       return '🔍';
+    case 'refactor':
+      return '🛠️';
     default:
       return '📌';
   }

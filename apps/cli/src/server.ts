@@ -8,7 +8,6 @@ import { existsSync } from 'fs';
 import { authRoutes } from './routes/auth.routes.js';
 import { prRoutes } from './routes/pr.routes.js';
 import { fsRoutes } from './routes/fs.routes.js';
-import { lspRoutes } from './routes/lsp.routes.js';
 import { aiRoutes } from './routes/ai.routes.js';
 import { indexRoutes } from './routes/index.routes.js';
 import { repositoriesRoutes } from './routes/repositories.routes.js';
@@ -54,9 +53,6 @@ export async function startServer(port: number) {
 
   // 파일 시스템 라우트 등록
   await fastify.register(fsRoutes);
-
-  // LSP 라우트 등록 (WebSocket)
-  await fastify.register(lspRoutes);
 
   // AI 라우트 등록
   await fastify.register(aiRoutes);

@@ -16,7 +16,7 @@ export function ResizablePanelLayout({
 }: ResizablePanelLayoutProps) {
   return (
     <Group
-      direction="horizontal"
+      orientation="horizontal"
       key="split-view-layout"
       className="h-full"
     >
@@ -41,7 +41,7 @@ export function ResizablePanelLayout({
         {beforeCode}
       </Panel>
 
-      <Separator className="w-1 bg-light-border dark:bg-dark-border hover:bg-light-accent-primary dark:hover:bg-dark-accent-primary transition-colors" />
+      <Separator className="w-1 bg-light-border dark:border-dark-border hover:bg-light-accent-primary dark:hover:bg-dark-accent-primary transition-colors" />
 
       {/* After Code Panel */}
       <Panel
@@ -52,7 +52,7 @@ export function ResizablePanelLayout({
         {afterCode}
       </Panel>
 
-      <Separator className="w-1 bg-light-border dark:bg-dark-border hover:bg-light-accent-primary dark:hover:bg-dark-accent-primary transition-colors" />
+      <Separator className="w-1 bg-light-border dark:border-dark-border hover:bg-light-accent-primary dark:hover:bg-dark-accent-primary transition-colors" />
 
       {/* Info Panel */}
       <Panel

@@ -15,11 +15,23 @@ interface ModifiedSymbol {
   line: number;
 }
 
+
+// Usage classifications for smart filtering
+enum UsageType {
+  IMPORT = 'IMPORT',           // Low value
+  TYPE_DEF = 'TYPE_DEF',       // Low value (unless focusing on types)
+  CONSTRUCTOR = 'CONSTRUCTOR', // Medium value
+  CALL = 'CALL',               // High value
+  INHERITANCE = 'INHERITANCE', // High value
+  UNKNOWN = 'UNKNOWN'          // Default
+}
+
 interface Reference {
   file: string;
   line: number;
   column: number;
   context: string; // 5 lines of context
+  type?: UsageType; // Added classification
 }
 
 interface ContextResult {
@@ -42,11 +54,22 @@ interface NavigationResult {
   symbolName: string;
 }
 
+export interface ComprehensiveContextResult {
+  symbols: ComprehensiveSymbolInfo[];
+}
+
+export interface ComprehensiveSymbolInfo extends ModifiedSymbol {
+  references: Reference[];
+  definition?: NavigationResult;
+  typeDefinition?: NavigationResult;
+  implementations?: NavigationResult;
+}
+
 /**
  * Tree-sitter based context analyzer for AI review
  *
  * Extracts modified symbols from diff and finds their usages
- * without requiring LSP or build tools.
+ * without requiring build tools.
  */
 export class ContextAnalyzer {
   private parsers: Map<string, Parser> = new Map();
@@ -98,16 +121,53 @@ export class ContextAnalyzer {
   }
 
   /**
+   * Get ripgrep glob arguments to exclude test files
+   */
+  private getRgGlobArgs(): string[] {
+    const exclusions = [
+      '!**/test/**',
+      '!**/tests/**',
+      '!**/__tests__/**',
+      '!**/__mocks__/**',
+      '!**/*.test.*',
+      '!**/*.spec.*',
+      '!**/*Test.java',
+      '!**/*Tests.java'
+    ];
+    
+    // Flatten to ['--glob', '!pattern', '--glob', '!pattern', ...]
+    return exclusions.flatMap(pattern => ['--glob', pattern]);
+  }
+
+  /**
+   * Check if a file is a test file
+   */
+  private isTestFile(filePath: string): boolean {
+    const lowerPath = filePath.toLowerCase();
+    return (
+      lowerPath.includes('/test/') ||
+      lowerPath.includes('/tests/') ||
+      lowerPath.includes('/__tests__/') ||
+      lowerPath.includes('/__mocks__/') ||
+      lowerPath.includes('.test.') ||
+      lowerPath.includes('.spec.') ||
+      lowerPath.endsWith('test.java') ||
+      lowerPath.endsWith('tests.java')
+    );
+  }
+
+  /**
    * Analyze changes and build context for AI review
    */
   async analyzeChanges(
     diff: string,
-    worktreePath: string
+    worktreePath: string,
+    allowedFiles?: string[]
   ): Promise<ContextResult[]> {
     console.log('[ContextAnalyzer] Analyzing changes in:', worktreePath);
 
     // 1. Extract modified symbols from diff
-    const modifiedSymbols = await this.extractModifiedSymbols(diff, worktreePath);
+    const modifiedSymbols = await this.extractModifiedSymbols(diff, worktreePath, allowedFiles);
     console.log('[ContextAnalyzer] Found modified symbols:', modifiedSymbols.length);
 
     // 2. Find references for each symbol
@@ -125,19 +185,35 @@ export class ContextAnalyzer {
     return results;
   }
 
+
+
   /**
    * Extract modified functions/classes from diff
    */
   private async extractModifiedSymbols(
     diff: string,
-    worktreePath: string
+    worktreePath: string,
+    allowedFiles?: string[]
   ): Promise<ModifiedSymbol[]> {
     const symbols: ModifiedSymbol[] = [];
 
     // Parse diff to find changed files and lines
-    const changedFiles = this.parseDiff(diff);
+    let changedFiles = this.parseDiff(diff);
+
+    // Filter by allowed files if provided
+    if (allowedFiles && allowedFiles.length > 0) {
+      const allowedSet = new Set(allowedFiles);
+      const originalCount = changedFiles.length;
+      changedFiles = changedFiles.filter(cf => allowedSet.has(cf.path));
+      console.log(`[ContextAnalyzer] Filtered changed files for analysis: ${originalCount} -> ${changedFiles.length}`);
+    }
 
     for (const fileChange of changedFiles) {
+      if (this.isTestFile(fileChange.path)) {
+        console.log(`[ContextAnalyzer] Skipping test file: ${fileChange.path}`);
+        continue;
+      }
+
       const filePath = path.join(worktreePath, fileChange.path);
 
       try {
@@ -171,6 +247,29 @@ export class ContextAnalyzer {
     const uniqueSymbols = Array.from(
       new Map(symbols.map(s => [`${s.file}:${s.name}`, s])).values()
     );
+
+    // Filter and prioritization (Optimization)
+    // 1. Prioritize Classes and Methods/Functions (High Value) over Variables
+    // 2. Limit to top 50 to prevent resource exhaustion (rg process explosion)
+    uniqueSymbols.sort((a, b) => {
+      const priority = {
+        'class': 3,
+        'method': 2,
+        'function': 2,
+        'variable': 1
+      };
+      
+      const pA = priority[a.type as keyof typeof priority] || 0;
+      const pB = priority[b.type as keyof typeof priority] || 0;
+      
+      return pB - pA; // Descending order
+    });
+
+    const MAX_SYMBOLS = 50;
+    if (uniqueSymbols.length > MAX_SYMBOLS) {
+      console.log(`[ContextAnalyzer] Limiting analysis to top ${MAX_SYMBOLS} symbols (found ${uniqueSymbols.length})`);
+      return uniqueSymbols.slice(0, MAX_SYMBOLS);
+    }
 
     return uniqueSymbols;
   }
@@ -323,6 +422,7 @@ export class ContextAnalyzer {
         '--no-heading',
         '--with-filename',
         '--max-count', '50', // Limit to 50 matches per file
+        ...this.getRgGlobArgs(),
       ], { reject: false });
 
       if (!stdout) {
@@ -343,15 +443,16 @@ export class ContextAnalyzer {
           continue;
         }
 
-        // Verify it's an actual call/usage
-        const isActualCall = await this.verifyReference(
+        // Verify it's an actual call/usage and classify it
+        const usageType = await this.verifyReference(
           filePath,
           line,
           column,
           symbol.name
         );
 
-        if (isActualCall) {
+        // Filter out low-value usages
+        if (usageType && usageType !== UsageType.IMPORT && usageType !== UsageType.TYPE_DEF) {
           // Get context (5 lines before and after)
           const context = await this.getContext(filePath, line, 5);
           references.push({
@@ -359,6 +460,7 @@ export class ContextAnalyzer {
             line,
             column,
             context,
+            type: usageType
           });
         }
       }
@@ -370,22 +472,22 @@ export class ContextAnalyzer {
   }
 
   /**
-   * Verify if a text match is an actual function call using Tree-sitter
+   * Verify and classify reference usage using Tree-sitter
    */
   private async verifyReference(
     filePath: string,
     line: number,
     column: number,
     symbolName: string
-  ): Promise<boolean> {
+  ): Promise<UsageType | null> {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const ext = path.extname(filePath).slice(1);
       const parser = this.parsers.get(ext);
 
       if (!parser) {
-        // No parser available, accept match
-        return true;
+        // No parser available, accept as UNKNOWN but valid
+        return UsageType.UNKNOWN;
       }
 
       const tree = parser.parse(content);
@@ -393,26 +495,62 @@ export class ContextAnalyzer {
       const node = tree.rootNode.descendantForPosition(position, position);
 
       // Check if node is a call expression or identifier in call context
-      if (!node) return false;
+      if (!node) return null;
 
-      // Check node type
-      const isCall =
-        node.type === 'call_expression' ||
-        node.type === 'method_invocation' ||
-        node.type === 'function_call' ||
-        node.parent?.type === 'call_expression' ||
-        node.parent?.type === 'method_invocation';
+      // Classify usage based on node type and parentage
+      let currentNode: any = node;
+      
+      // Traverse up slightly to check context
+      for (let i = 0; i < 3; i++) {
+        if (!currentNode) break;
+        const type = currentNode.type;
 
-      // Also check if it's the identifier itself
-      const isIdentifier =
-        (node.type === 'identifier' || node.type === 'name') &&
-        node.text === symbolName;
+        // 1. Imports
+        if (type.includes('import')) return UsageType.IMPORT;
+        
+        // 2. Calls / Invocations (High Value)
+        if (
+          type === 'call_expression' || 
+          type === 'method_invocation' || 
+          type === 'function_call'
+        ) return UsageType.CALL;
 
-      return isCall || isIdentifier;
+        // 3. Constructors
+        if (
+          type === 'new_expression' || 
+          type === 'object_creation_expression'
+        ) return UsageType.CONSTRUCTOR;
+
+        // 4. Inheritance
+        if (
+          type === 'extends_clause' || 
+          type === 'implements_clause' ||
+          type === 'class_declaration' // if we are in the header
+        ) return UsageType.INHERITANCE;
+
+        // 5. Type Definitions / Annotations
+        if (
+          type.includes('type') || 
+          type.includes('interface') || 
+          type === 'field_declaration' // Often just defining a member
+        ) return UsageType.TYPE_DEF;
+
+        currentNode = currentNode.parent;
+      }
+
+      // Default fallback if we found the text but couldn't classify strongly
+      // Check if strictly identifier match
+      if (node.text === symbolName) {
+          // Determine if it looks like a type usage
+          if (node.parent?.type.includes('type')) return UsageType.TYPE_DEF;
+          return UsageType.UNKNOWN;
+      }
+
+      return null;
     } catch (error) {
-      // If verification fails, accept the match
+      // If verification fails, accept as unknown to be safe
       console.warn(`[ContextAnalyzer] Verification failed for ${filePath}:${line}`);
-      return true;
+      return UsageType.UNKNOWN;
     }
   }
 
@@ -444,31 +582,68 @@ export class ContextAnalyzer {
    */
   buildAIContext(results: ContextResult[]): string {
     const sections: string[] = [];
+    let totalLength = 0;
+    const MAX_CONTEXT_LENGTH = 50000; // Hard cap on context size
 
     for (const result of results) {
+      // Check total length limit
+      if (totalLength > MAX_CONTEXT_LENGTH) {
+        sections.push('\n... (Context truncated due to size limit)\n');
+        break;
+      }
+
       const { symbol, references } = result;
 
-      sections.push(
-        `\n## Modified: ${symbol.name} (${symbol.type}) in ${symbol.file}:${symbol.line}\n`
-      );
+      const header = `\n## Modified: ${symbol.name} (${symbol.type}) in ${symbol.file}:${symbol.line}\n`;
+      sections.push(header);
+      totalLength += header.length;
 
       if (references.length === 0) {
-        sections.push('No usages found in the codebase.\n');
+        const noUsage = 'No usages found in the codebase.\n';
+        sections.push(noUsage);
+        totalLength += noUsage.length;
       } else {
-        sections.push(`Found ${references.length} usage(s):\n`);
+        const usageHeader = `Found ${references.length} usage(s) (Filtered High-Value):\n`;
+        sections.push(usageHeader);
+        totalLength += usageHeader.length;
 
-        for (const ref of references.slice(0, 10)) { // Limit to 10 references
-          sections.push(`\n### ${ref.file}:${ref.line}\n\`\`\`\n${ref.context}\n\`\`\`\n`);
+        // Limit to 3 references to save tokens (down from 10)
+        const refLimit = 3;
+        
+        // Prioritize: CALL > INHERITANCE > CONSTRUCTOR > UNKNOWN
+        const sortedRefs = references.sort((a, b) => {
+             const priorities: Record<string, number> = {
+                 [UsageType.CALL]: 4,
+                 [UsageType.INHERITANCE]: 3,
+                 [UsageType.CONSTRUCTOR]: 2,
+                 [UsageType.UNKNOWN]: 1,
+                 [UsageType.TYPE_DEF]: 0,
+                 [UsageType.IMPORT]: 0
+             };
+             // Handle optional type and use UNKNOWN as fallback
+             const typeA = a.type || UsageType.UNKNOWN;
+             const typeB = b.type || UsageType.UNKNOWN;
+             return (priorities[typeB] || 0) - (priorities[typeA] || 0);
+        });
+
+        for (const ref of sortedRefs.slice(0, refLimit)) { 
+          const refContent = `\n### [${ref.type}] ${ref.file}:${ref.line}\n\`\`\`\n${ref.context}\n\`\`\`\n`;
+          sections.push(refContent);
+          totalLength += refContent.length;
         }
 
-        if (references.length > 10) {
-          sections.push(`\n... and ${references.length - 10} more usage(s)\n`);
+        if (references.length > refLimit) {
+          const remaining = `\n... and ${references.length - refLimit} more usage(s)\n`;
+          sections.push(remaining);
+          totalLength += remaining.length;
         }
       }
     }
 
     return sections.join('\n');
   }
+
+
 
   /**
    * Get symbol at a specific position in a file
@@ -566,7 +741,8 @@ export class ContextAnalyzer {
         '--with-filename',
         '--max-count', '20',
         '--type-add', 'source:*.{ts,tsx,js,jsx,java,kt,kts,py,go,rs,vue}',
-        '--type', 'source'
+        '--type', 'source',
+        ...this.getRgGlobArgs(),
       ], { reject: false });
 
       console.log(`[ContextAnalyzer] Ripgrep found ${stdout ? stdout.split('\n').filter(l => l.trim()).length : 0} matches`);
@@ -766,6 +942,8 @@ export class ContextAnalyzer {
     return { ...result, symbolName: typeName };
   }
 
+
+
   /**
    * Infer type name from variable declaration or parameter
    */
@@ -862,6 +1040,7 @@ export class ContextAnalyzer {
             '--max-count', '50',
             '--type-add', 'source:*.{ts,tsx,js,jsx,java,kt,kts,py,go,rs,vue}',
             '--type', 'source',
+            ...this.getRgGlobArgs(),
           ], { reject: false });
 
           if (stdout) {
@@ -989,45 +1168,25 @@ export class ContextAnalyzer {
   }
 
   /**
-   * Analyze comprehensive context including definitions, type definitions, implementations, and references
-   * This provides much richer context for AI review by showing not just usage, but also where symbols
-   * are defined, what types are involved, and what implements interfaces.
+   * Comprehensive analysis (definitions, types, implementations)
    */
   async analyzeComprehensiveContext(
     diff: string,
-    worktreePath: string
-  ): Promise<{
-    symbols: Array<{
-      name: string;
-      file: string;
-      line: number;
-      changeType: 'added' | 'modified' | 'deleted';
-      definition?: NavigationResult;
-      typeDefinition?: NavigationResult;
-      implementations?: NavigationResult;
-      references: Array<{
-        file: string;
-        line: number;
-        column: number;
-        context: string;
-      }>;
-    }>;
-  }> {
+    worktreePath: string,
+    allowedFiles?: string[]
+  ): Promise<ComprehensiveContextResult> {
     console.log('[ContextAnalyzer] Analyzing comprehensive context...');
 
     // First, get basic symbol analysis with references
-    const changedSymbols = await this.analyzeChanges(diff, worktreePath);
+    const changedSymbols = await this.analyzeChanges(diff, worktreePath, allowedFiles);
 
-    const comprehensiveResults = [];
+    const comprehensiveResults: ComprehensiveSymbolInfo[] = [];
 
     for (const symbolData of changedSymbols) {
       console.log(`[ContextAnalyzer] Analyzing comprehensive context for symbol: ${symbolData.symbol.name}`);
 
-      const result: any = {
-        name: symbolData.symbol.name,
-        file: symbolData.symbol.file,
-        line: symbolData.symbol.line,
-        changeType: symbolData.symbol.type,
+      const result: ComprehensiveSymbolInfo = {
+        ...symbolData.symbol,
         references: symbolData.references,
       };
 
@@ -1057,15 +1216,18 @@ export class ContextAnalyzer {
         }
 
         // Find implementations (for interfaces/abstract classes)
-        const implementations = await this.findImplementations(
-          symbolData.symbol.file,
-          symbolData.symbol.line,
-          0,
-          worktreePath
-        );
-        if (implementations.locations.length > 0) {
-          result.implementations = implementations;
-          console.log(`[ContextAnalyzer] Found ${implementations.locations.length} implementation(s) for ${symbolData.symbol.name}`);
+        // Check if type is suitable for implementation search
+        if (symbolData.symbol.type === 'class' || symbolData.symbol.type === 'function' || symbolData.symbol.type === 'method') {
+           const implementations = await this.findImplementations(
+            symbolData.symbol.file,
+            symbolData.symbol.line,
+            0,
+            worktreePath
+          );
+          if (implementations.locations.length > 0) {
+            result.implementations = implementations;
+            console.log(`[ContextAnalyzer] Found ${implementations.locations.length} implementation(s) for ${symbolData.symbol.name}`);
+          }
         }
       } catch (error) {
         console.warn(`[ContextAnalyzer] Failed to analyze context for ${symbolData.symbol.name}:`, error);
@@ -1082,27 +1244,11 @@ export class ContextAnalyzer {
    * Build AI context string from comprehensive context analysis
    * Formats all definitions, type definitions, implementations, and references for AI consumption
    */
-  buildComprehensiveAIContext(contextData: {
-    symbols: Array<{
-      name: string;
-      file: string;
-      line: number;
-      changeType: 'added' | 'modified' | 'deleted';
-      definition?: NavigationResult;
-      typeDefinition?: NavigationResult;
-      implementations?: NavigationResult;
-      references: Array<{
-        file: string;
-        line: number;
-        column: number;
-        context: string;
-      }>;
-    }>;
-  }): string {
+  buildComprehensiveAIContext(contextData: ComprehensiveContextResult): string {
     let contextText = '';
 
     for (const symbolData of contextData.symbols) {
-      contextText += `\n### Symbol: \`${symbolData.name}\` (${symbolData.changeType})\n`;
+      contextText += `\n### Symbol: \`${symbolData.name}\` (${symbolData.type})\n`;
       contextText += `Modified in: **${symbolData.file}:${symbolData.line}**\n\n`;
 
       // Add definitions

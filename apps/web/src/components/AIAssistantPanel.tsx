@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
+
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
@@ -200,24 +201,32 @@ export function AIAssistantPanel({ workingDirectory, context, onContextChange }:
   return (
     <div className="flex flex-col h-full bg-light-surface dark:bg-dark-surface border-l border-light-border dark:border-dark-border shadow-xl">
       {/* Header with Clear Action */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-light-border dark:border-dark-border bg-light-surface/50 dark:bg-dark-surface/50 backdrop-blur-sm sticky top-0 z-10">
-        <div>
-          <h3 className="text-sm font-semibold text-light-text-primary dark:text-dark-text-primary uppercase tracking-wider">
-            AI Assistant
-          </h3>
-        </div>
-        <div className="flex items-center gap-2">
-          {messages.length > 0 && (
-            <button
-              onClick={clearChat}
-              className="p-1.5 text-light-text-muted dark:text-dark-text-muted hover:text-light-accent-error dark:hover:text-dark-accent-error hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated rounded-md transition-all"
-              title="Clear Chat"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          )}
+      <div className="flex flex-col px-4 py-3 border-b border-light-border dark:border-dark-border sticky top-0 z-10">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+              <span className="text-white text-lg">🤖</span>
+            </div>
+            <div>
+              <h3 className="text-white font-semibold">AI Assistant</h3>
+              <p className="text-white/80 text-xs">
+                Ask anything about your code
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {messages.length > 0 && (
+              <button
+                onClick={clearChat}
+                className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 transition-colors flex items-center justify-center text-white"
+                title="Clear Chat"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -248,9 +257,10 @@ export function AIAssistantPanel({ workingDirectory, context, onContextChange }:
             </div>
             
             {/* Content */}
-            <div className={`prose prose-sm dark:prose-invert max-w-none leading-relaxed ${
-              msg.role === 'user' ? 'text-light-text-primary dark:text-dark-text-primary' : ''
-            }`}>
+            <div className={`prose prose-sm dark:prose-invert max-w-none leading-relaxed 
+              ${msg.role === 'assistant' ? 'ai-markdown-content' : 'text-light-text-primary dark:text-dark-text-primary'}
+            `}>
+
               {msg.role === 'assistant' ? (
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkBreaks]}
@@ -261,9 +271,10 @@ export function AIAssistantPanel({ workingDirectory, context, onContextChange }:
                       </div>
                     ),
                     p: ({children}) => <p className="mb-4 last:mb-0">{children}</p>,
-                    code({ node, inline, className, children, ...props }) {
+                    code({ node, className, children, ...props }) {
                       const match = /language-(\w+)/.exec(className || '');
-                      if (!inline && className && match) {
+                      if (className && match) {
+
                         return (
                           <SyntaxHighlighter
                             style={vscDarkPlus}
@@ -311,9 +322,10 @@ export function AIAssistantPanel({ workingDirectory, context, onContextChange }:
                         {children}
                       </div>
                     ),
-                    code({ node, inline, className, children, ...props }) {
+                    code({ node, className, children, ...props }) {
                       const match = /language-(\w+)/.exec(className || '');
-                      if (!inline && className && match) {
+                      if (className && match) {
+
                         return (
                           <SyntaxHighlighter
                             style={vscDarkPlus}
@@ -355,20 +367,20 @@ export function AIAssistantPanel({ workingDirectory, context, onContextChange }:
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area - Command Bar Style */}
-      <div className="p-6 bg-transparent">
+      {/* Input Area - Modern Cursor-like Style */}
+      <div className="p-4 bg-transparent">
         <div className={`
-          relative flex flex-col gap-2 
-          bg-light-surface dark:bg-dark-surface 
+          relative flex flex-col 
+          bg-light-surface-elevated dark:bg-dark-surface-elevated
           border transition-all duration-200 ease-in-out
-          rounded-xl shadow-lg
+          rounded-2xl shadow-sm
           ${isLoading 
             ? 'border-light-border dark:border-dark-border opacity-80' 
             : 'border-light-border dark:border-dark-border focus-within:border-light-accent-primary dark:focus-within:border-dark-accent-primary focus-within:ring-1 focus-within:ring-light-accent-primary dark:focus-within:ring-dark-accent-primary'
           }
         `}>
           
-          {/* Context Pills */}
+          {/* Context Pills - Inside the container at the top */}
           {context && (
             <div className="flex flex-wrap items-center gap-2 px-4 pt-3 pb-1">
               {context.code && (
@@ -403,45 +415,61 @@ export function AIAssistantPanel({ workingDirectory, context, onContextChange }:
               placeholder="Ask a question..."
               disabled={isLoading}
               rows={1}
-              className="w-full px-4 py-3 bg-transparent border-0 focus:ring-0 text-light-text-primary dark:text-dark-text-primary placeholder-light-text-muted dark:placeholder-dark-text-muted resize-none max-h-[200px] text-[0.9375rem] leading-relaxed"
+              className="w-full px-4 pt-3 pb-2 bg-transparent border-0 focus:ring-0 text-light-text-primary dark:text-dark-text-primary placeholder-light-text-muted dark:placeholder-dark-text-muted resize-none max-h-[200px] text-[0.9375rem] leading-relaxed"
             />
             
-            <div className="flex justify-between items-center px-2 pb-2">
+            {/* Bottom Actions Bar */}
+            <div className="flex justify-between items-center px-3 pb-3 pt-1">
+               {/* Left: Attach References */}
                <div className="flex items-center gap-1">
-                 {/* Future: Attachment buttons could go here */}
+                 <button 
+                   className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 text-light-text-muted dark:text-dark-text-muted transition-colors"
+                   title="Attach Reference (Code, Files, PR)"
+                 >
+                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                   </svg>
+                 </button>
+                 <button 
+                   className="px-2 py-1 rounded-md hover:bg-black/5 dark:hover:bg-white/10 text-xs font-medium text-light-text-muted dark:text-dark-text-muted transition-colors flex items-center gap-1.5"
+                   title="Select Model"
+                 >
+                   <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                   <span>Gemini 3 Pro</span>
+                   <svg className="w-3 h-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                   </svg>
+                 </button>
                </div>
                
-               <button
-                onClick={isLoading ? cancelRequest : sendMessage}
-                disabled={!input.trim() && !isLoading}
-                className={`
-                  p-1.5 rounded-lg transition-all duration-200
-                  ${!input.trim() && !isLoading
-                    ? 'text-light-text-disabled dark:text-dark-text-disabled cursor-not-allowed'
-                    : isLoading
-                      ? 'bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20'
-                      : 'bg-light-accent-primary dark:bg-dark-accent-primary text-white shadow-sm hover:opacity-90'
-                  }
-                `}
-              >
-                {isLoading ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
-                     <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4 transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19V5m0 0l-7 7m7-7l7 7" />
-                  </svg>
-                )}
-              </button>
+               {/* Right: Send */}
+               <div className="flex items-center gap-2">
+                 <button
+                  onClick={isLoading ? cancelRequest : sendMessage}
+                  disabled={!input.trim() && !isLoading}
+                  className={`
+                    w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200
+                    ${!input.trim() && !isLoading
+                      ? 'bg-black/5 dark:bg-white/10 text-light-text-disabled dark:text-dark-text-disabled cursor-not-allowed'
+                      : isLoading
+                        ? 'bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20'
+                        : 'bg-blue-600 hover:bg-blue-700 text-white shadow-md hover:shadow-lg transform active:scale-95'
+                    }
+                  `}
+                >
+                  {isLoading ? (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+                       <rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor"/>
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 12h14M12 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </button>
+               </div>
             </div>
           </div>
-        </div>
-        
-        <div className="mt-2 text-center">
-           <p className="text-[10px] text-light-text-muted dark:text-dark-text-muted opacity-60">
-             Ai Assistant can make mistakes. Please review responses.
-           </p>
         </div>
       </div>
     </div>

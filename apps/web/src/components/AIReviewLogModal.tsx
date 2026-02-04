@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Scanner } from './Scanner';
 import type { AIReviewOptions } from './AIReviewOptionsModal';
 
 export interface LogEntry {
@@ -483,11 +484,15 @@ export function AIReviewLogModal({ isOpen, onClose, log }: AIReviewLogModalProps
                     </div>
                   </div>
                 </div>
-              ) : (
-                <div className="text-center py-8 text-light-text-muted dark:text-dark-text-muted">
-                  Review in progress...
-                </div>
-              )}
+              ) :                  <div className="flex flex-col items-center justify-center py-12">
+                    <div className="mb-4">
+                      <Scanner size="lg" />
+                    </div>
+                    <p className="text-light-text-muted dark:text-dark-text-muted animate-pulse">
+                      Review in progress...
+                    </p>
+                  </div>
+              }
             </div>
           )}
         </div>

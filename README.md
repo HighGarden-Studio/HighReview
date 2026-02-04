@@ -16,15 +16,17 @@ HighReview is a powerful local PR review tool that doesn't disrupt your working 
 ## ✨ Features
 
 ### 🎯 Core Features
+
 - **Zero Distraction Review**: Uses Git Worktree to create isolated review environments
 - **GitHub-Style Interface**: Familiar 4-panel layout (File Tree | Before | After | Info Panel)
 - **AI-Powered Analysis**: Comprehensive code review with AI suggestions
 - **Real-time Chat Assistant**: Ask questions about code with context awareness
-- **Code Navigation**: Go to Definition, Find Usages, and more with LSP integration
+- **Code Navigation**: Go to Definition, Find Usages, and more via Tree-sitter integration
 - **Inline Comments**: GitHub-style comment system with Markdown support
 - **Call Stack Visualization**: Mermaid flowcharts and sequence diagrams
 
 ### 🤖 AI Review Features
+
 - **Automatic Issue Detection**: Critical issues, warnings, and suggestions
 - **Change Intent Analysis**: Understand why changes were made
 - **Impact Analysis**: Assess scope and breaking changes
@@ -32,6 +34,7 @@ HighReview is a powerful local PR review tool that doesn't disrupt your working 
 - **Multi-Provider Support**: Claude Code, Ollama, LM Studio
 
 ### 💬 Interactive Features
+
 - **File References**: `@file:path:line` syntax to reference code
 - **Issue References**: `@issue:ID`, `@change:ID`, `@impact:ID`
 - **Markdown WYSIWYG Editor**: Rich text editing for comments
@@ -69,6 +72,7 @@ HighReview/
 ### Tech Stack
 
 **Backend (CLI)**
+
 - Node.js 18+
 - Fastify (Web Server)
 - TypeScript
@@ -76,6 +80,7 @@ HighReview/
 - SQLite (Data persistence)
 
 **Frontend (Web)**
+
 - React 18
 - TypeScript
 - Vite
@@ -86,6 +91,7 @@ HighReview/
 - Lucide React (Icons)
 
 **AI Providers**
+
 - Claude Code CLI
 - Ollama
 - LM Studio
@@ -105,17 +111,20 @@ HighReview/
 ### Installation
 
 1. **Clone the repository**
+
    ```bash
    git clone https://github.com/HighGarden-Studio/HighReview.git
    cd HighReview
    ```
 
 2. **Install dependencies**
+
    ```bash
    npm install
    ```
 
 3. **Authenticate with GitHub**
+
    ```bash
    gh auth login
    ```
@@ -176,11 +185,13 @@ The review screen has 4 main panels:
 ### 3. Add Comments
 
 #### Inline Comments
+
 1. Click on any line in the code editor
 2. Write your comment using Markdown
 3. Choose "Add single comment" or "Add to review"
 
 #### Review Summary
+
 1. Click "Submit Review" button
 2. Choose review type: Comment / Approve / Request Changes
 3. Write optional summary
@@ -189,16 +200,19 @@ The review screen has 4 main panels:
 ### 4. AI Features
 
 #### Ask AI
+
 - Select code and type your question
 - Use file references: `@file:path.ts:42`
 - Reference issues: `@issue:0`, `@change:1`
 
 #### AI Review
+
 - Automatically runs on PR load
 - Click "Re-run" to refresh analysis
 - View issues, change intents, and impact analysis
 
 #### Call Stack Visualization
+
 - Click on function names to see call stacks
 - View flowcharts and sequence diagrams
 - Navigate to referenced files
@@ -224,15 +238,15 @@ Toggle theme in the top-right corner or press `Cmd/Ctrl + Shift + T`.
 
 ### Keyboard Shortcuts
 
-| Action | Shortcut |
-|--------|----------|
-| Toggle AI Chat | `Cmd/Ctrl + /` |
-| Next File | `j` |
-| Previous File | `k` |
-| Add Comment | `c` |
-| Submit Review | `Cmd/Ctrl + Enter` |
-| Focus Search | `f` |
-| Show Shortcuts | `?` |
+| Action         | Shortcut           |
+| -------------- | ------------------ |
+| Toggle AI Chat | `Cmd/Ctrl + /`     |
+| Next File      | `j`                |
+| Previous File  | `k`                |
+| Add Comment    | `c`                |
+| Submit Review  | `Cmd/Ctrl + Enter` |
+| Focus Search   | `f`                |
+| Show Shortcuts | `?`                |
 
 ## 🔧 Configuration
 
@@ -240,14 +254,15 @@ Toggle theme in the top-right corner or press `Cmd/Ctrl + Shift + T`.
 
 All configuration is optional. The app works out of the box with GitHub CLI authentication.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | Server port | `8765` |
-| `HIGHREVIEW_BASE_DIR` | Data storage directory | `./.highreview-prs` (local mode) |
-| `HIGHREVIEW_GLOBAL_MODE` | Use global storage mode | `false` |
-| `NODE_ENV` | Environment mode | `development` |
+| Variable                 | Description             | Default                          |
+| ------------------------ | ----------------------- | -------------------------------- |
+| `PORT`                   | Server port             | `8765`                           |
+| `HIGHREVIEW_BASE_DIR`    | Data storage directory  | `./.highreview-prs` (local mode) |
+| `HIGHREVIEW_GLOBAL_MODE` | Use global storage mode | `false`                          |
+| `NODE_ENV`               | Environment mode        | `development`                    |
 
 **Storage Modes:**
+
 - **Local Mode (Default)**: Stores PR clones in `./.highreview-prs/` within your current working directory
   - ✅ Best for npx usage and Claude Code integration
   - ✅ Workspace-isolated: Each directory has its own PR cache
@@ -257,12 +272,14 @@ All configuration is optional. The app works out of the box with GitHub CLI auth
   - Shared cache across all projects
 
 **Note:**
+
 - No `GITHUB_TOKEN` needed - uses GitHub CLI (`gh`) authentication
 - No `AI_PROVIDER` needed - select in Settings UI
 
 ### Data Storage
 
 **Local Mode (Default):**
+
 ```
 your-workspace/
 └── .highreview-prs/          # PR review workspace (add to .gitignore)
@@ -275,17 +292,20 @@ your-workspace/
 ```
 
 **Global Mode:**
+
 ```
 ~/.highreview/                # Global PR review workspace
 
 ```
+
 ~/.highreview/
-├── config.json           # User configuration
-├── highreview.db         # SQLite database
-├── worktrees/            # Git worktrees for PRs
-│   ├── owner-repo-123/
-│   └── ...
-└── cache/                # AI response cache
+├── config.json # User configuration
+├── highreview.db # SQLite database
+├── worktrees/ # Git worktrees for PRs
+│ ├── owner-repo-123/
+│ └── ...
+└── cache/ # AI response cache
+
 ```
 
 ## 🤝 Contributing
@@ -336,7 +356,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 - Mermaid diagrams may not render on first load (refresh to fix)
 - Large PRs (100+ files) may be slow to load
-- LSP features require TypeScript/JavaScript projects
 
 ## 📄 License
 
@@ -365,3 +384,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 Made with ❤️ by [HighGarden Studio](https://github.com/HighGarden-Studio)
+```

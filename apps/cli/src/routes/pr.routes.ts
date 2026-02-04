@@ -6,6 +6,8 @@ import { ConfigService } from '../services/ConfigService.js';
 import { AIReviewService } from '../services/AIReviewService.js';
 import { ProjectIndexService } from '../services/ProjectIndexService.js';
 import { ContextAnalyzer } from '../services/ContextAnalyzer.js';
+import { normalizeReviewResult } from '../utils/ReviewNormalizer.js';
+import type { ChunkedReviewProgress } from '../types/ChunkedReviewTypes.js';
 
 export async function prRoutes(fastify: FastifyInstance) {
   const gitService = new GitService();
@@ -166,8 +168,7 @@ export async function prRoutes(fastify: FastifyInstance) {
         // Fetch commits
         const commits = await githubService.getPRCommits(owner, repo, prNumber);
 
-        // Fetch repository languages
-        const languages = await githubService.getRepositoryLanguages(owner, repo);
+
 
         // Save to database
         dbService.savePullRequest({
@@ -190,7 +191,6 @@ export async function prRoutes(fastify: FastifyInstance) {
           pullRequest: pr,
           files,
           commits,
-          languages,
         });
       } catch (error: any) {
         fastify.log.error(error);
@@ -362,18 +362,29 @@ export async function prRoutes(fastify: FastifyInstance) {
       const { forceRerun: _, ...cacheOptions } = options || {};
       const optionsHash = JSON.stringify(cacheOptions);
 
-      // If force re-run, delete all existing reviews for this PR
+      // If force re-run, delete all existing reviews and chunks for this PR
       if (forceRerun) {
-        const deletedCount = dbService.deleteAllAIReviews(owner, repo, prNumber);
-        console.log(`[PR AI Review] Force re-run: deleted ${deletedCount} existing review(s)`);
+        const deletedReviews = dbService.deleteAllAIReviews(owner, repo, prNumber);
+        const deletedChunks = dbService.deleteAllChunkCachesForPR(owner, repo, prNumber);
+        console.log(`[PR AI Review] Force re-run: deleted ${deletedReviews} reviews and ${deletedChunks} chunk caches`);
       } else {
-        // Check if cached review exists
-        const cachedReview = dbService.getAIReviewCache(owner, repo, prNumber, headSha, optionsHash);
+        // Check if cached review exists (try exact match first)
+        let cachedReview = dbService.getAIReviewCache(owner, repo, prNumber, headSha, optionsHash);
+        
+        // If no exact match, try getting the latest review for this PR/commit (loose matching)
+        if (!cachedReview) {
+           const latest = dbService.getLatestAIReview(owner, repo, prNumber);
+           if (latest && latest.commitSha === headSha) {
+             console.log('[PR AI Review] Using latest cached review (loose option match)');
+             cachedReview = latest.review;
+           }
+        }
+
         if (cachedReview) {
           console.log('[PR AI Review] Using cached review from database');
           return reply.send({
             success: true,
-            review: cachedReview,
+            review: normalizeReviewResult(cachedReview),
             cached: true,
           });
         }
@@ -388,7 +399,19 @@ export async function prRoutes(fastify: FastifyInstance) {
         forceRerun
       });
 
-      const reviewResult = await aiReviewService.reviewPR(worktreePath, baseBranch, language, options);
+      // Fetch authoritative list of changed files from GitHub
+      let allowedFiles: string[] | undefined;
+      try {
+        console.log(`[PR AI Review] Fetching authoritative file list for PR #${prNumber} from GitHub...`);
+        const prFiles = await githubService.getPRFiles(owner, repo, prNumber);
+        allowedFiles = prFiles.map(f => f.path);
+        console.log(`[PR AI Review] Found ${allowedFiles.length} changed files in PR via GitHub API`);
+      } catch (error: any) {
+        console.warn(`[PR AI Review] Failed to fetch PR files from GitHub: ${error.message}`);
+        console.warn('[PR AI Review] Will fallback to git diff only (less robust against stale branches)');
+      }
+
+      const reviewResult = await aiReviewService.reviewPR(worktreePath, baseBranch, language, options, allowedFiles);
 
       console.log('[PR AI Review] Review completed:', {
         filesReviewed: reviewResult.filesReviewed,
@@ -416,6 +439,225 @@ export async function prRoutes(fastify: FastifyInstance) {
         error: 'Failed to perform AI review',
         message: error.message,
       });
+    }
+  });
+
+  /**
+   * POST /api/prs/:owner/:repo/:number/ai-review/stream
+   * Perform AI code review with SSE streaming for progress updates
+   */
+  fastify.post<{
+    Params: { owner: string; repo: string; number: string };
+    Body: { worktreePath: string; baseBranch: string; language?: 'en' | 'ko' | 'ja' | 'zh'; options?: any };
+  }>('/api/prs/:owner/:repo/:number/ai-review/stream', async (request, reply) => {
+    try {
+      const { owner, repo, number } = request.params;
+      const { worktreePath, baseBranch, language = 'en', options } = request.body;
+      const prNumber = parseInt(number);
+
+      if (isNaN(prNumber)) {
+        return reply.code(400).send({ error: 'Invalid PR number' });
+      }
+
+      if (!worktreePath || !baseBranch) {
+        return reply.code(400).send({
+          error: 'Invalid request',
+          message: 'worktreePath and baseBranch are required',
+        });
+      }
+
+      const authenticated = await githubService.isAuthenticated();
+      if (!authenticated) {
+        return reply.code(401).send({ error: 'Not authenticated' });
+      }
+
+      // Get PR details for cache key
+      const prData = await githubService.getPRDetails(owner, repo, prNumber);
+      if (!prData) {
+        return reply.code(404).send({ error: 'Pull request not found' });
+      }
+      const headSha = prData.headRefOid;
+
+      // Set up SSE headers
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      // Create AbortController for cancellation support
+      const abortController = new AbortController();
+      let clientDisconnected = false;
+
+      // Handle client disconnection
+      request.raw.on('close', () => {
+        clientDisconnected = true;
+        abortController.abort();
+        console.log('[PR AI Review Stream] Client disconnected, aborting review');
+      });
+
+      // Helper to safely write SSE data
+      const writeSseData = (data: any): boolean => {
+        if (clientDisconnected) {
+          return false;
+        }
+        try {
+          reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+          return true;
+        } catch (error) {
+          clientDisconnected = true;
+          console.error('[PR AI Review Stream] Write failed:', error);
+          return false;
+        }
+      };
+
+      // Progress callback for SSE
+      const onProgress = (progress: ChunkedReviewProgress) => {
+        if (clientDisconnected || abortController.signal.aborted) {
+          throw new Error('Client disconnected');
+        }
+        if (!writeSseData({ type: 'progress', ...progress })) {
+          throw new Error('Client disconnected');
+        }
+      };
+
+      try {
+        // Check cache first (skip forceRerun check for streaming)
+        const { forceRerun: _, ...cacheOptions } = options || {};
+        const optionsHash = JSON.stringify(cacheOptions);
+
+        if (options?.forceRerun) {
+          const deletedReviews = dbService.deleteAllAIReviews(owner, repo, prNumber);
+          const deletedChunks = dbService.deleteAllChunkCachesForPR(owner, repo, prNumber);
+          console.log(`[PR AI Review Stream] Force re-run: deleted ${deletedReviews} reviews and ${deletedChunks} chunk caches`);
+        }
+
+        if (!options?.forceRerun) {
+          // Try strict cache match first
+          let cachedReview = dbService.getAIReviewCache(owner, repo, prNumber, headSha, optionsHash);
+          
+          // If no strict match, try loose match (latest for this commit)
+          if (!cachedReview) {
+             const latest = dbService.getLatestAIReview(owner, repo, prNumber);
+             if (latest && latest.commitSha === headSha) {
+               console.log('[PR AI Review Stream] Using latest cached review (loose option match)');
+               cachedReview = latest.review;
+             }
+          }
+
+          if (cachedReview) {
+            console.log('[PR AI Review Stream] Using cached review');
+            writeSseData({ type: 'cached', review: normalizeReviewResult(cachedReview) });
+            reply.raw.end();
+            return;
+          }
+        }
+
+        console.log('[PR AI Review Stream] Starting streaming review');
+
+        // Fetch authoritative list of changed files from GitHub
+        let allowedFiles: string[] | undefined;
+        try {
+          console.log(`[PR AI Review Stream] Fetching authoritative file list for PR #${prNumber} from GitHub...`);
+          const prFiles = await githubService.getPRFiles(owner, repo, prNumber);
+          allowedFiles = prFiles.map(f => f.path);
+        } catch (error: any) {
+             console.warn(`[PR AI Review Stream] Failed to fetch PR files: ${error.message}`);
+        }
+
+        // Perform review with progress callback
+        const rawReviewResult = await aiReviewService.reviewPR(
+          worktreePath,
+          baseBranch,
+          language,
+          { ...options, useChunkedReview: true, prInfo: { owner, repo, prNumber } },
+          allowedFiles,
+          onProgress
+        );
+        
+        // Normalize the review result to fix malformed AI responses
+        const reviewResult = normalizeReviewResult(rawReviewResult);
+
+        // Check if client disconnected during review
+        if (clientDisconnected || abortController.signal.aborted) {
+          console.log('[PR AI Review Stream] Review completed but client disconnected');
+          return;
+        }
+
+        // Cache the result
+        dbService.setAIReviewCache(owner, repo, prNumber, headSha, optionsHash, reviewResult);
+
+        // Send final result - handle large payloads by checking size
+        const resultJson = JSON.stringify({ type: 'complete', review: reviewResult });
+        const MAX_SSE_SIZE = 64 * 1024; // 64KB per message (conservative limit)
+
+        // DEBUG: Log what enhanced data we have
+        console.log('[PR AI Review Stream] reviewResult enhanced fields:', {
+          hasChangeIntents: !!reviewResult.changeIntents,
+          hasImpactAnalysis: !!reviewResult.impactAnalysis,
+          hasCallStacks: !!reviewResult.callStacks,
+          changeIntentsLength: Array.isArray(reviewResult.changeIntents) ? reviewResult.changeIntents.length : 0,
+          impactAnalysisKeys: reviewResult.impactAnalysis ? Object.keys(reviewResult.impactAnalysis) : [],
+        });
+
+        if (resultJson.length > MAX_SSE_SIZE) {
+          console.log(`[PR AI Review Stream] Large result (${resultJson.length} bytes), sending in chunks`);
+          
+          // Send result in parts
+          const parts = {
+            summary: reviewResult.summary,
+            criticalIssues: reviewResult.criticalIssues,
+            warnings: reviewResult.warnings,
+            suggestions: reviewResult.suggestions,
+            filesReviewed: reviewResult.filesReviewed,
+            totalIssues: reviewResult.totalIssues,
+          };
+
+          // Send main data
+          writeSseData({ type: 'complete', review: parts });
+
+          // Send optional sections separately if they exist
+          if (reviewResult.changeIntents) {
+            writeSseData({ type: 'metadata', field: 'changeIntents', data: reviewResult.changeIntents });
+          }
+          if (reviewResult.callStacks) {
+            writeSseData({ type: 'metadata', field: 'callStacks', data: reviewResult.callStacks });
+          }
+          if (reviewResult.impactAnalysis) {
+            writeSseData({ type: 'metadata', field: 'impactAnalysis', data: reviewResult.impactAnalysis });
+          }
+          if (reviewResult.movedCode) {
+            writeSseData({ type: 'metadata', field: 'movedCode', data: reviewResult.movedCode });
+          }
+          if (reviewResult.refactorings) {
+            writeSseData({ type: 'metadata', field: 'refactorings', data: reviewResult.refactorings });
+          }
+        } else {
+          // Send complete result in one message
+          writeSseData({ type: 'complete', review: reviewResult });
+        }
+
+        reply.raw.end();
+      } catch (error: any) {
+        // Don't log client disconnection as error
+        if (error.message === 'Client disconnected' || abortController.signal.aborted) {
+          console.log('[PR AI Review Stream] Review cancelled by client');
+        } else {
+          console.error('[PR AI Review Stream] Error:', error);
+          writeSseData({ type: 'error', message: error.message });
+        }
+        reply.raw.end();
+      }
+    } catch (error: any) {
+      fastify.log.error(error);
+      // If headers haven't been sent yet, send error response
+      if (!reply.raw.headersSent) {
+        return reply.code(500).send({
+          error: 'Failed to start AI review stream',
+          message: error.message,
+        });
+      }
     }
   });
 

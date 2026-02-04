@@ -6,6 +6,12 @@ export interface GitHubUser {
   email: string;
 }
 
+export interface GitHubLabel {
+  name: string;
+  color: string;
+  description: string;
+}
+
 export interface GitHubPR {
   number: number;
   title: string;
@@ -23,6 +29,20 @@ export interface GitHubPR {
   commentCount?: number;
   reviewCount?: number;
   fileCount?: number;
+  labels: GitHubLabel[];
+  viewerLatestReview?: {
+    state: string;
+    createdAt: string;
+    body: string;
+  };
+  reactions?: {
+    nodes: {
+      content: string;
+      user: {
+        login: string;
+      };
+    }[];
+  };
 }
 
 export interface PRFile {
@@ -145,6 +165,13 @@ export class GitHubCLIService {
                     files {
                       totalCount
                     }
+                    labels(first: 10) {
+                      nodes {
+                        name
+                        color
+                        description
+                      }
+                    }
                   }
                 }
               }
@@ -183,6 +210,7 @@ export class GitHubCLIService {
               commentCount: prData.comments.totalCount,
               reviewCount: prData.reviews.totalCount,
               fileCount: prData.files.totalCount,
+              labels: prData.labels?.nodes || [],
             };
           } catch (error) {
             console.error(`[GitHub] Failed to get details for PR #${pr.number}:`, error);
@@ -264,6 +292,13 @@ export class GitHubCLIService {
                     files {
                       totalCount
                     }
+                    labels(first: 10) {
+                      nodes {
+                        name
+                        color
+                        description
+                      }
+                    }
                   }
                 }
               }
@@ -302,6 +337,7 @@ export class GitHubCLIService {
               commentCount: prData.comments.totalCount,
               reviewCount: prData.reviews.totalCount,
               fileCount: prData.files.totalCount,
+              labels: prData.labels?.nodes || [],
             };
           } catch (error) {
             console.error(`[GitHub] Failed to get details for PR #${pr.number}:`, error);
@@ -383,6 +419,13 @@ export class GitHubCLIService {
                     files {
                       totalCount
                     }
+                    labels(first: 10) {
+                      nodes {
+                        name
+                        color
+                        description
+                      }
+                    }
                   }
                 }
               }
@@ -421,6 +464,7 @@ export class GitHubCLIService {
               commentCount: prData.comments.totalCount,
               reviewCount: prData.reviews.totalCount,
               fileCount: prData.files.totalCount,
+              labels: prData.labels?.nodes || [],
             };
           } catch (error) {
             console.error(`[GitHub] Failed to get details for PR #${pr.number}:`, error);
@@ -483,12 +527,24 @@ export class GitHubCLIService {
               reviews {
                 totalCount
               }
+              viewerLatestReview {
+                state
+                createdAt
+                body
+              }
               reactions(first: 100) {
                 nodes {
                   content
                   user {
                     login
                   }
+                }
+              }
+              labels(first: 10) {
+                nodes {
+                  name
+                  color
+                  description
                 }
               }
             }
@@ -529,7 +585,9 @@ export class GitHubCLIService {
         updatedAt: pr.updatedAt,
         commentCount: pr.comments.totalCount,
         reviewCount: pr.reviews.totalCount,
+        viewerLatestReview: pr.viewerLatestReview,
         reactions: pr.reactions,
+        labels: pr.labels?.nodes || [],
       } as any;
     } catch (error: any) {
       console.error('[GitHub] Failed to get PR details:', error);
@@ -1204,11 +1262,13 @@ export class GitHubCLIService {
 
       return stdout;
     } catch (error: any) {
-      console.error('[GitHub] Failed to fetch file content:', error);
-      // File might not exist at this ref
+      // File might not exist at this ref - handle 404 specific case
       if (error.stderr?.includes('404')) {
+        // Just throw clearer error without logging full stack trace for expected 404s
         throw new Error(`File not found: ${filePath} at ${ref}`);
       }
+      
+      console.error('[GitHub] Failed to fetch file content:', error);
       throw new Error(`Failed to fetch file from GitHub: ${error.message}`);
     }
   }
@@ -1397,24 +1457,4 @@ export class GitHubCLIService {
     }
   }
 
-  /**
-   * Get programming languages used in a repository
-   * Returns a map of language names to their byte counts
-   */
-  async getRepositoryLanguages(owner: string, repo: string): Promise<Record<string, number>> {
-    try {
-      const { stdout } = await execa('gh', [
-        'api',
-        `/repos/${owner}/${repo}/languages`,
-      ]);
-
-      const languages = JSON.parse(stdout);
-      console.log(`[GitHub] Repository languages for ${owner}/${repo}:`, Object.keys(languages).join(', '));
-      return languages;
-    } catch (error: any) {
-      console.error('[GitHub] Failed to fetch repository languages:', error);
-      // Return empty object on error
-      return {};
-    }
-  }
 }

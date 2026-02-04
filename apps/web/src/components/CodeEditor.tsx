@@ -15,7 +15,6 @@ import { CommentForm } from './CommentForm';
 import { PRCommentThread } from './PRCommentThread';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import { createVSCodeModel, createStandardModel } from '../utils/monacoModels';
-// DISABLED LSP: import { registerLSPActions } from '../utils/editorService';
 import { registerTreeSitterActions } from '../utils/editorService';
 
 // Zone Widget that renders React component inside Monaco editor
@@ -148,6 +147,10 @@ interface CodeEditorProps {
   onPRCommentReply?: (threadId: string, body: string) => Promise<void>;
   onPRCommentReact?: (commentId: string, reaction: string) => Promise<void>;
   onPRCommentResolve?: (threadId: string) => Promise<void>;
+  // Continuous scroll navigation
+  onNavigateNext?: () => void;
+  onNavigatePrev?: () => void;
+  initialScrollPosition?: 'top' | 'bottom';
 }
 
 function CodeEditorComponent({
@@ -175,6 +178,9 @@ function CodeEditorComponent({
   onPRCommentReply,
   onPRCommentReact,
   onPRCommentResolve,
+  onNavigateNext,
+  onNavigatePrev,
+  initialScrollPosition = 'top',
 }: CodeEditorProps) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -192,6 +198,7 @@ function CodeEditorComponent({
     top: number;
   } | null>(null);
   const [forceDecorationUpdate, setForceDecorationUpdate] = useState(0);
+  const [isEditorReady, setIsEditorReady] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -319,6 +326,32 @@ function CodeEditorComponent({
       }
     });
 
+      // Helper function to calculate safe popup position within viewport
+      const calculateSafePopupPosition = (startLine: number): number => {
+        if (!editorRef.current) return 20;
+        const lineTop = editorRef.current.getTopForLineNumber(startLine);
+        const scrollTop = editorRef.current.getScrollTop();
+        const editorHeight = editorRef.current.getLayoutInfo().height;
+        const estimatedPopupHeight = 250; // Approximate height of CommentForm
+        const margin = 20;
+        
+        // Calculate initial position (below the line)
+        let popupTop = lineTop - scrollTop + margin;
+        
+        // Check if popup would overflow bottom of viewport
+        if (popupTop + estimatedPopupHeight > editorHeight) {
+          // Position above the line instead
+          popupTop = lineTop - scrollTop - estimatedPopupHeight - margin;
+          
+          // If it would overflow top, position at top with some margin
+          if (popupTop < margin) {
+            popupTop = margin;
+          }
+        }
+        
+        return popupTop;
+      };
+
       // Handle mouseUp to check selection after drag
       editorRef.current.onMouseUp((e) => {
       const lineNumber = e.target.position?.lineNumber;
@@ -348,12 +381,11 @@ function CodeEditorComponent({
           }
 
           // Show comment form with appropriate line range
-          const lineTop = editorRef.current.getTopForLineNumber(startLine);
-          const scrollTop = editorRef.current.getScrollTop();
+          const safeTop = calculateSafePopupPosition(startLine);
           setActiveCommentLine({
             line: startLine,
             endLine: endLine !== startLine ? endLine : undefined,
-            top: lineTop - scrollTop + 20,
+            top: safeTop,
           });
         }
       }
@@ -378,16 +410,17 @@ function CodeEditorComponent({
           const startLine = selection.startLineNumber;
           const endLine = selection.endLineNumber;
 
-          const lineTop = ed.getTopForLineNumber(startLine);
-          const scrollTop = ed.getScrollTop();
+          const safeTop = calculateSafePopupPosition(startLine);
           setActiveCommentLine({
             line: startLine,
             endLine: endLine !== startLine ? endLine : undefined,
-            top: lineTop - scrollTop + 20,
+            top: safeTop,
           });
         },
         });
       }
+
+      setIsEditorReady(true);
     };
 
     // Initialize editor
@@ -396,6 +429,7 @@ function CodeEditorComponent({
     });
 
     return () => {
+      setIsEditorReady(false);
       // Clean up zone widgets first
       if (editorRef.current && prCommentZonesRef.current.size > 0) {
         editorRef.current.changeViewZones((changeAccessor) => {
@@ -408,7 +442,10 @@ function CodeEditorComponent({
       }
 
       // Dispose editor
-      editorRef.current?.dispose();
+      if (editorRef.current) {
+        editorRef.current.dispose();
+        editorRef.current = null;
+      }
       // Only dispose model if it's not a shared model (no URI)
       if (modelRef.current && !filePath && !repoRoot) {
         modelRef.current.dispose();
@@ -525,9 +562,9 @@ function CodeEditorComponent({
     if (!editor) return;
 
     // Save scroll position before any updates
-    const saveScrollPosition = () => {
-      scrollPositionRef.current = editor.getScrollTop();
-    };
+    // const saveScrollPosition = () => {
+    //   scrollPositionRef.current = editor.getScrollTop();
+    // };
 
     // Listen to scroll events to continuously save position
     const scrollDisposable = editor.onDidScrollChange(() => {
@@ -538,6 +575,81 @@ function CodeEditorComponent({
       scrollDisposable.dispose();
     };
   }, [editorRef.current]);
+
+  // Handle initial scroll position (top or bottom)
+  useEffect(() => {
+    if (!editorRef.current || !isEditorReady) return;
+
+    if (initialScrollPosition === 'bottom') {
+      // Small delay to ensure content is fully rendered
+      requestAnimationFrame(() => {
+        const scrollHeight = editorRef.current?.getScrollHeight() || 0;
+        editorRef.current?.setScrollTop(scrollHeight);
+      });
+    } else {
+      editorRef.current?.setScrollTop(0);
+    }
+  }, [initialScrollPosition, isEditorReady, filePath]);
+
+  // Handle overscroll for continuous navigation
+  useEffect(() => {
+    if (!containerRef.current || !onNavigateNext || !onNavigatePrev) return;
+
+    let lastNavigationTime = 0;
+    let accumulatedDeltaY = 0;
+    let lastWheelTime = 0;
+    const NAVIGATION_THROTTLE = 1000; // ms
+    const ACCUMULATION_RESET_TIME = 200; // ms
+    const TRIGGER_THRESHOLD = 200; // Total deltaY to trigger navigation
+
+    const handleWheel = (e: WheelEvent) => {
+      if (!editorRef.current) return;
+      
+      const scrollTop = editorRef.current.getScrollTop();
+      const scrollHeight = editorRef.current.getScrollHeight();
+      const layoutInfo = editorRef.current.getLayoutInfo();
+      const viewportHeight = layoutInfo.height;
+
+      const now = Date.now();
+      
+      // Reset accumulation if too much time passed between scrolls
+      if (now - lastWheelTime > ACCUMULATION_RESET_TIME) {
+        accumulatedDeltaY = 0;
+      }
+      lastWheelTime = now;
+      accumulatedDeltaY += e.deltaY;
+
+      if (now - lastNavigationTime < NAVIGATION_THROTTLE) return;
+
+      const isAtBottom = scrollTop + viewportHeight >= scrollHeight - 5;
+      const isAtTop = scrollTop <= 5;
+      const isShortFile = scrollHeight <= viewportHeight + 5;
+
+      // Check for overscroll at bottom (Next File)
+      if (accumulatedDeltaY > TRIGGER_THRESHOLD && (isAtBottom || isShortFile)) {
+        console.log('[CodeEditor] Navigating to next file:', { accumulatedDeltaY, isAtBottom, isShortFile });
+        lastNavigationTime = now;
+        accumulatedDeltaY = 0;
+        if (onNavigateNext) onNavigateNext();
+      }
+      
+      // Check for overscroll at top (Prev File)
+      if (accumulatedDeltaY < -TRIGGER_THRESHOLD && (isAtTop || isShortFile)) {
+        console.log('[CodeEditor] Navigating to previous file:', { accumulatedDeltaY, isAtTop, isShortFile });
+        lastNavigationTime = now;
+        accumulatedDeltaY = 0;
+        if (onNavigatePrev) onNavigatePrev();
+      }
+    };
+
+    const container = containerRef.current;
+    // Use capture: true to catch wheel events before Monaco handles them
+    container.addEventListener('wheel', handleWheel, { capture: true, passive: true });
+
+    return () => {
+      container.removeEventListener('wheel', handleWheel, { capture: true });
+    };
+  }, [onNavigateNext, onNavigatePrev, isEditorReady]);
 
   // Monitor and restore AI review decorations if they get lost
   useEffect(() => {
@@ -674,7 +786,7 @@ function CodeEditorComponent({
         editorRef.current?.setScrollTop(scrollPositionRef.current);
       });
     }
-  }, [value, filePath, aiReviewIssues, aiReviewCallStacks, forceDecorationUpdate]);
+  }, [value, filePath, aiReviewIssues, aiReviewCallStacks, forceDecorationUpdate, isEditorReady]);
 
   // Ref to store comment decoration IDs
   const commentDecorationsRef = useRef<string[]>([]);

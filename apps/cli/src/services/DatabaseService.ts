@@ -75,6 +75,17 @@ export interface AutoReviewHistory {
   error?: string | null;
 }
 
+export interface ChunkCache {
+  signatureHash: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  chunkIndex?: number;
+  files: string[]; // JSON array
+  result: any; // ChunkReviewResult
+  createdAt: number;
+}
+
 export class DatabaseService {
   private db: Database.Database;
   private static instance: DatabaseService;
@@ -118,6 +129,20 @@ export class DatabaseService {
         username TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create AI review chunk cache table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS ai_review_chunk_cache (
+        signature_hash TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        chunk_index INTEGER,
+        files_json TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
       )
     `);
 
@@ -1227,6 +1252,81 @@ export class DatabaseService {
       lastIndexed: lastIndexed.lastIndexed,
     };
   }
+  /**
+   * Save chunk review cache
+   */
+  saveChunkCache(cache: ChunkCache): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO ai_review_chunk_cache (
+        signature_hash, owner, repo, pr_number, chunk_index,
+        files_json, result_json, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(signature_hash) DO UPDATE SET
+        chunk_index = excluded.chunk_index,
+        files_json = excluded.files_json,
+        result_json = excluded.result_json,
+        created_at = excluded.created_at
+    `);
+
+    stmt.run(
+      cache.signatureHash,
+      cache.owner,
+      cache.repo,
+      cache.prNumber,
+      cache.chunkIndex,
+      JSON.stringify(cache.files),
+      JSON.stringify(cache.result),
+      cache.createdAt
+    );
+  }
+
+  /**
+   * Get chunk cache
+   */
+  getChunkCache(signatureHash: string): ChunkCache | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM ai_review_chunk_cache WHERE signature_hash = ?
+    `);
+    
+    const row = stmt.get(signatureHash) as any;
+    
+    if (!row) return null;
+    
+    return {
+      signatureHash: row.signature_hash,
+      owner: row.owner,
+      repo: row.repo,
+      prNumber: row.pr_number,
+      chunkIndex: row.chunk_index,
+      files: JSON.parse(row.files_json),
+      result: JSON.parse(row.result_json),
+      createdAt: row.created_at
+    };
+  }
+
+  /**
+   * Delete chunk cache
+   */
+  deleteChunkCache(signatureHash: string): void {
+    const stmt = this.db.prepare(`
+      DELETE FROM ai_review_chunk_cache WHERE signature_hash = ?
+    `);
+    stmt.run(signatureHash);
+  }
+
+  /**
+   * Delete all chunk caches for a specific PR
+   */
+  deleteAllChunkCachesForPR(owner: string, repo: string, prNumber: number): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM ai_review_chunk_cache
+      WHERE owner = ? AND repo = ? AND pr_number = ?
+    `);
+    const result = stmt.run(owner, repo, prNumber);
+    return result.changes;
+  }
+
 
   /**
    * Close database connection

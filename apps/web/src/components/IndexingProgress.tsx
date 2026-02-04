@@ -25,7 +25,7 @@ export function IndexingProgress({ repoPath, onComplete, onError }: IndexingProg
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   useEffect(() => {
-    let eventSource: EventSource | null = null;
+    const abortController = new AbortController();
 
     const startIndexing = async () => {
       setStatus('indexing');
@@ -38,6 +38,7 @@ export function IndexingProgress({ repoPath, onComplete, onError }: IndexingProg
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ repoPath }),
+          signal: abortController.signal,
         });
 
         if (!response.ok) {
@@ -92,6 +93,7 @@ export function IndexingProgress({ repoPath, onComplete, onError }: IndexingProg
           }
         }
       } catch (error: any) {
+        if (error.name === 'AbortError') return;
         console.error('[IndexingProgress] Error:', error);
         setErrorMessage(error.message);
         setStatus('error');
@@ -102,9 +104,19 @@ export function IndexingProgress({ repoPath, onComplete, onError }: IndexingProg
     startIndexing();
 
     return () => {
-      eventSource?.close();
+      abortController.abort();
     };
   }, [repoPath, onComplete, onError]);
+
+  // Auto-hide after 3 seconds when completed
+  useEffect(() => {
+    if (status === 'completed') {
+      const timer = setTimeout(() => {
+        onComplete?.(stats);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [status, onComplete, stats]);
 
   if (status === 'idle') {
     return null;
@@ -112,7 +124,7 @@ export function IndexingProgress({ repoPath, onComplete, onError }: IndexingProg
 
   if (status === 'error') {
     return (
-      <div className="fixed bottom-4 right-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 shadow-lg max-w-md">
+      <div className="fixed bottom-4 right-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 shadow-lg max-w-md z-[100]">
         <div className="flex items-start gap-3">
           <div className="flex-shrink-0">
             <svg
@@ -122,7 +134,7 @@ export function IndexingProgress({ repoPath, onComplete, onError }: IndexingProg
             >
               <path
                 fillRule="evenodd"
-                d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293-1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
                 clipRule="evenodd"
               />
             </svg>
@@ -139,14 +151,6 @@ export function IndexingProgress({ repoPath, onComplete, onError }: IndexingProg
   }
 
   if (status === 'completed') {
-    // Auto-hide after 3 seconds
-    useEffect(() => {
-      const timer = setTimeout(() => {
-        onComplete?.(stats);
-      }, 3000);
-      return () => clearTimeout(timer);
-    }, []);
-
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
         <div className="bg-white dark:bg-gray-800 rounded-lg p-6 shadow-xl max-w-md w-full mx-4">
@@ -185,29 +189,16 @@ export function IndexingProgress({ repoPath, onComplete, onError }: IndexingProg
 
   // Indexing in progress
   return (
-    <div className="fixed bottom-4 right-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 shadow-lg max-w-md">
+    <div className="fixed bottom-4 right-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 shadow-lg max-w-md z-[100]">
       <div className="flex items-start gap-3">
         <div className="flex-shrink-0">
-          <svg
-            className="w-5 h-5 text-blue-500 animate-spin"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
+          <div className="w-5 h-5 flex items-center justify-center">
+            <div className="w-4 h-4 rounded-full border border-blue-500/30 relative overflow-hidden">
+              <div className="absolute inset-x-0 h-[1px] bg-blue-500 animate-scanner" />
+            </div>
+          </div>
         </div>
+
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
             Indexing Repository

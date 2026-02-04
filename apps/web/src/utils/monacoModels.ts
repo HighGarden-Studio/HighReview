@@ -1,40 +1,17 @@
 import * as monaco from 'monaco-editor';
-import {
-  RegisteredMemoryFile,
-  RegisteredFileSystemProvider,
-  registerFileSystemOverlay
-} from '@codingame/monaco-vscode-files-service-override';
-import { createModelReference } from '@codingame/monaco-vscode-api/monaco';
 
-// Global file system provider for all VSCode-integrated models
-let globalFileSystemProvider: RegisteredFileSystemProvider | null = null;
-let overlayDisposable: { dispose: () => void } | null = null;
-const registeredFiles = new Set<string>();
-const modelReferences = new Map<string, monaco.editor.IReference<monaco.editor.ITextModel>>();
+// Registry of created models to prevent duplicates
+// Registry of created models to prevent duplicates (currently unused)
+// const _modelReferences = new Map<string, monaco.editor.ITextModel>();
 
 /**
- * Initialize the global file system provider for VSCode services
- * Exported for use in DiffEditor
- */
-export function ensureFileSystemProvider(): RegisteredFileSystemProvider {
-  if (!globalFileSystemProvider) {
-    globalFileSystemProvider = new RegisteredFileSystemProvider(false);
-    overlayDisposable = registerFileSystemOverlay(1, globalFileSystemProvider);
-    console.log('[MonacoModels] Initialized global file system provider');
-  }
-  return globalFileSystemProvider;
-}
-
-// Re-export RegisteredMemoryFile for DiffEditor
-export { RegisteredMemoryFile } from '@codingame/monaco-vscode-files-service-override';
-
-/**
- * Create a Monaco model that's integrated with VSCode services for LSP support.
- * Uses RegisteredMemoryFile and createModelReference for full VSCode integration.
+ * Create a Monaco model (Standard Version)
+ * Replaces the VSCode-integrated version to use standard Monaco API
+ * for better stability with themes and highlighting.
  *
  * @param content - File content
  * @param language - Programming language ID
- * @param filePath - Full file path (e.g., /path/to/repo/src/file.java)
+ * @param filePath - Full file path
  * @returns Promise<monaco.editor.ITextModel>
  */
 export async function createVSCodeModel(
@@ -45,64 +22,41 @@ export async function createVSCodeModel(
   const uri = monaco.Uri.file(filePath);
   const uriString = uri.toString();
 
-  // Ensure file system provider is initialized
-  const fileSystemProvider = ensureFileSystemProvider();
-
-  // Register file with VSCode file system (only if not already registered)
-  if (!registeredFiles.has(uriString)) {
-    const file = new RegisteredMemoryFile(uri, content);
-    fileSystemProvider.registerFile(file);
-    registeredFiles.add(uriString);
-    console.log('[MonacoModels] Registered file with VSCode filesystem:', uriString);
-  } else {
-    // File already registered - just log and continue
-    console.log('[MonacoModels] File already registered, reusing existing:', uriString);
+  // Check if model already exists
+  const existingModel = monaco.editor.getModel(uri);
+  if (existingModel) {
+    existingModel.setValue(content);
+    // Ensure language is set
+    monaco.editor.setModelLanguage(existingModel, language);
+    return existingModel;
   }
 
-  // Create model reference using VSCode-enhanced API
-  // This enables LSP features like ctrl+click, context menu, etc.
-  const modelRef = await createModelReference(uri);
-
-  // Store reference to prevent disposal
-  modelReferences.set(uriString, modelRef);
-
-  const model = modelRef.object.textEditorModel!;
-
-  // Set the language mode for the model
-  // This is critical for LSP features to work
-  monaco.editor.setModelLanguage(model, language);
-
-  console.log('[MonacoModels] Created VSCode-integrated model with reference:', {
+  // Create new model
+  const model = monaco.editor.createModel(content, language, uri);
+  
+  console.log('[MonacoModels] Created standard Monaco model:', {
     uri: uriString,
-    language: model.getLanguageId(),
-    contentLength: model.getValueLength()
+    language,
+    contentLength: content.length
   });
-
-  // Note: MonacoLanguageClient should automatically send textDocument/didOpen
-  // notification when the model is created. The documentSelector in the LSP
-  // client configuration should match this file's language and URI pattern.
-  console.log('[MonacoModels] Model should be automatically synced with LSP server via MonacoLanguageClient');
 
   return model;
 }
 
 /**
- * Dispose a model reference to clean up resources
+ * Dispose a model (Standard Version)
  */
 export function disposeVSCodeModel(filePath: string): void {
   const uri = monaco.Uri.file(filePath);
-  const uriString = uri.toString();
-
-  const modelRef = modelReferences.get(uriString);
-  if (modelRef) {
-    modelRef.dispose();
-    modelReferences.delete(uriString);
-    console.log('[MonacoModels] Disposed model reference:', uriString);
+  const model = monaco.editor.getModel(uri);
+  if (model) {
+    model.dispose();
+    console.log('[MonacoModels] Disposed model:', uri.toString());
   }
 }
 
 /**
- * Fallback to standard Monaco model creation for when VSCode services aren't needed
+ * Fallback to standard Monaco model creation
  */
 export function createStandardModel(
   content: string,
@@ -119,3 +73,8 @@ export function createStandardModel(
   }
   return monaco.editor.createModel(content, language);
 }
+
+// Stub for compatibility if needed elsewhere
+export const ensureFileSystemProvider = () => ({});
+export const RegisteredMemoryFile = class { constructor(_uri: any, _content: any) {} };
+

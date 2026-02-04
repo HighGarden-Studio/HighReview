@@ -7,7 +7,7 @@ function App() {
   const [demoPath, setDemoPath] = useState('/Users/highgarden/Developments/AI/HighReview');
 
   if (showDemo) {
-    return <ReviewPage worktreePath={demoPath} />;
+    return <ReviewPage worktreePath={demoPath} owner="" repo="" prNumber="0" />;
   }
 
   return (

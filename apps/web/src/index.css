@@ -219,3 +219,43 @@ pre code {
 [data-panel-resize-handle] {
   flex-shrink: 0;
 }
+
+/* AI Assistant Markdown Refinement */
+.ai-markdown-content {
+  font-size: 13px !important;
+  line-height: 1.6 !important;
+}
+
+.ai-markdown-content h1 {
+  font-size: 1.1rem !important;
+  margin-top: 1.5rem !important;
+  margin-bottom: 0.75rem !important;
+}
+
+.ai-markdown-content h2 {
+  font-size: 14px !important;
+  margin-top: 1.25rem !important;
+  margin-bottom: 0.5rem !important;
+  font-weight: 700 !important;
+}
+
+.ai-markdown-content h3 {
+  font-size: 13px !important;
+  margin-top: 1rem !important;
+  margin-bottom: 0.5rem !important;
+  font-weight: 600 !important;
+}
+
+.ai-markdown-content p, 
+.ai-markdown-content li {
+  font-size: 13px !important;
+  margin-bottom: 0.75rem !important;
+}
+
+.ai-markdown-content code {
+  font-size: 12px !important;
+}
+
+.ai-markdown-content pre {
+  margin: 1rem 0 !important;
+}

@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import { homedir } from 'os';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { rm } from 'fs/promises';
 
 export interface WorktreeInfo {
   path: string;
@@ -312,7 +313,8 @@ export class GitService {
     if (!existing || existing.commit !== commitHash) {
       // If the directory exists but is not in worktree list, prune and retry
       if (existsSync(worktreePath)) {
-        console.log('[Worktree] Stale worktree directory detected, pruning...');
+        console.log('[Worktree] Stale worktree directory detected, removing...');
+        await rm(worktreePath, { recursive: true, force: true });
         await this.pruneWorktrees(repoPath);
       }
 
@@ -329,7 +331,10 @@ export class GitService {
       } catch (error: any) {
         // If creation fails due to lock, try pruning and retry once
         if (error.message?.includes('locked') || error.message?.includes('already exists')) {
-          console.log('[Worktree] Lock detected, pruning and retrying...');
+          console.log('[Worktree] Lock detected, cleaning up and retrying...');
+          if (existsSync(worktreePath)) {
+            await rm(worktreePath, { recursive: true, force: true });
+          }
           await this.pruneWorktrees(repoPath);
 
           // Retry

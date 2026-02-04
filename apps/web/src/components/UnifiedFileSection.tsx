@@ -40,8 +40,6 @@ export const UnifiedFileSection = forwardRef<HTMLDivElement, UnifiedFileSectionP
   (
     {
       file,
-      worktreePath,
-      baseBranch,
       repoRoot,
       originalContent,
       modifiedContent,
@@ -169,7 +167,7 @@ export const UnifiedFileSection = forwardRef<HTMLDivElement, UnifiedFileSectionP
                     original={originalContent}
                     modified={modifiedContent}
                     language={getLanguageFromFilename(file.filename)}
-                    theme={theme === 'dark' ? 'vs-dark' : 'vs-light'}
+                    theme={theme === 'dark' ? 'highreview-dark' : 'highreview-light'}
                     height="600px"
                     filePath={file.path}
                     repoRoot={repoRoot}

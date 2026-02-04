@@ -43,6 +43,7 @@ export interface AIReviewRequest {
     generateCallStack?: boolean;
     analyzeBroaderImpact?: boolean;
     semanticDiffAnalysis?: boolean;
+    maxTokens?: number;
   };
 }
 

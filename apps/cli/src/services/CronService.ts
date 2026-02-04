@@ -154,7 +154,8 @@ export class CronService {
               ignoreWhitespace: aiOptions.ignoreWhitespace,
               ignoreComments: aiOptions.ignoreComments,
               customPrompt: aiOptions.customPrompt,
-            }
+            },
+            undefined // allowedFiles - Cron auto-review relies on git diff for now, can be enhanced later
           );
 
           console.log(`[CronService] AI review completed for PR #${prNumber}:`, {

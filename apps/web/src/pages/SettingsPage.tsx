@@ -3,8 +3,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { AIProviderSelector } from '../components/AIProviderSelector';
-import { ThemeToggle } from '../components/ThemeToggle';
-import { LanguageSelector } from '../components/LanguageSelector';
 
 interface AIReviewOptions {
   includeContext: boolean;
@@ -39,8 +37,8 @@ export function SettingsPage() {
   const [activeTab, setActiveTab] = useState<'ai' | 'repos' | 'cron' | 'history'>('ai');
   const [newRepoOwner, setNewRepoOwner] = useState('');
   const [newRepoName, setNewRepoName] = useState('');
-  const [expandedRepoOptions, setExpandedRepoOptions] = useState<number | null>(null);
-  const [editingOptions, setEditingOptions] = useState<Record<number, AIReviewOptions>>({});
+  const [expandedRepoOptions, setExpandedRepoOptions] = useState<string | null>(null);
+  const [editingOptions, setEditingOptions] = useState<Record<string, AIReviewOptions>>({});
 
   // Default AI review options
   const defaultAIOptions: AIReviewOptions = {
@@ -173,7 +171,7 @@ export function SettingsPage() {
 
 
 
-  const toggleRepoOptions = (repoId: number, repo: Repository) => {
+  const toggleRepoOptions = (repoId: string, repo: Repository) => {
     if (expandedRepoOptions === repoId) {
       setExpandedRepoOptions(null);
     } else {
@@ -187,7 +185,7 @@ export function SettingsPage() {
   };
 
   const updateRepoOption = <K extends keyof AIReviewOptions>(
-    repoId: number,
+    repoId: string,
     key: K,
     value: AIReviewOptions[K]
   ) => {
@@ -201,8 +199,7 @@ export function SettingsPage() {
   };
 
   const saveRepoOptions = (repoId: string) => {
-    const repoIdNum = parseInt(repoId);
-    const options = editingOptions[repoIdNum];
+    const options = editingOptions[repoId];
     if (options) {
       updateAIReviewOptions.mutate({ repoId, options });
       setExpandedRepoOptions(null);
@@ -210,39 +207,23 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg">
-      {/* Header */}
-      <header className="border-b border-light-border dark:border-dark-border bg-light-surface/80 dark:bg-dark-surface/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => navigate('/')}
-              className="p-2 rounded-lg hover:bg-light-surface-elevated dark:hover:bg-dark-surface-elevated transition-colors"
-              title="Back to home"
-            >
-              <svg className="w-5 h-5 text-light-text-primary dark:text-dark-text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-              </svg>
-            </button>
-            <div>
-              <h1 className="text-xl font-bold text-light-text-primary dark:text-dark-text-primary">
-                Settings
-              </h1>
-              <p className="text-xs text-light-text-muted dark:text-dark-text-muted">
-                Configure HighReview preferences
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <LanguageSelector />
-            <ThemeToggle />
-          </div>
-        </div>
-      </header>
+    <div className="h-full overflow-y-auto bg-light-bg dark:bg-dark-bg custom-scrollbar">
+      {/* Header removed for global AppLayout */}
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
         <div className="max-w-5xl mx-auto">
+          {/* Back Button */}
+          <button
+            onClick={() => navigate(-1)}
+            className="mb-6 flex items-center gap-2 text-light-text-secondary dark:text-dark-text-secondary hover:text-light-accent-primary dark:hover:text-dark-accent-primary transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+            Back
+          </button>
+
           {/* Tabs */}
           <div className="flex gap-2 mb-6 border-b border-light-border dark:border-dark-border">
             <button
