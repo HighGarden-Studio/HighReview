@@ -359,8 +359,14 @@ export class AIReviewService {
           suggestions: chunkedResult.suggestions,
           filesReviewed: chunkedResult.filesReviewed,
           totalIssues: chunkedResult.totalIssues,
-          changeIntents: chunkedResult.changeIntent ? [{ level: 'file', intent: chunkedResult.changeIntent, motivation: '' }] : undefined,
-          impactAnalysis: chunkedResult.impact ? { scope: 'PR', affectedAreas: [chunkedResult.impact] } : undefined,
+          changeIntents: chunkedResult.changeIntents,
+          impactAnalysis: chunkedResult.impactAnalysis,
+          callStacks: chunkedResult.callStacks,
+          movedCode: chunkedResult.movedCode,
+          refactorings: chunkedResult.refactorings,
+          changeIntent: chunkedResult.changeIntent,
+          impact: chunkedResult.impact,
+          semanticAnalysis: chunkedResult.semanticAnalysis,
         };
       }
 

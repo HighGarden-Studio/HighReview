@@ -248,9 +248,19 @@ export function EnhancedAIReviewPanel({
             const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
               return child?.props?.className?.includes('language-');
             });
+            
+            // Check if paragraph contains only strong/bold text
+            const firstChild = node?.children?.[0];
+            const isStrongOnly = node?.children?.length === 1 && 
+              firstChild?.type === 'element' && 
+              (firstChild as any).tagName === 'strong';
+            
             const Element = hasCodeBlock ? 'div' : 'p';
             return (
-              <Element className="text-sm text-light-text-secondary dark:text-dark-text-secondary leading-loose mb-4 break-words" {...props}>
+              <Element 
+                className={`text-sm text-light-text-secondary dark:text-dark-text-secondary leading-normal break-words ${isStrongOnly ? 'mb-1' : 'mb-4'}`} 
+                {...props}
+              >
                 {children}
               </Element>
             );
@@ -271,17 +281,17 @@ export function EnhancedAIReviewPanel({
             </h3>
           ),
           ul: ({ children }) => (
-            <ul className="list-disc list-inside space-y-2 text-sm text-light-text-secondary dark:text-dark-text-secondary mb-4 ml-2">
+            <ul className="list-disc list-inside space-y-0.5 text-sm text-light-text-secondary dark:text-dark-text-secondary mb-4 pl-0">
               {children}
             </ul>
           ),
           ol: ({ children }) => (
-            <ol className="list-decimal list-inside space-y-2 text-sm text-light-text-secondary dark:text-dark-text-secondary mb-4 ml-2">
+            <ol className="list-decimal list-inside space-y-0.5 text-sm text-light-text-secondary dark:text-dark-text-secondary mb-4 pl-0">
               {children}
             </ol>
           ),
           li: ({ children }) => (
-            <li className="text-sm text-light-text-secondary dark:text-dark-text-secondary leading-relaxed">
+            <li className="text-sm text-light-text-secondary dark:text-dark-text-secondary leading-snug [&>p]:inline [&>p]:!m-0">
               {children}
             </li>
           ),
@@ -409,30 +419,33 @@ export function EnhancedAIReviewPanel({
 
       {/* Tabs */}
       <div className="flex items-center gap-1 px-4 py-2 bg-light-surface-elevated dark:bg-dark-surface-elevated border-b border-light-border dark:border-dark-border overflow-x-auto">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
-            disabled={tab.count === 0}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap flex items-center gap-2 ${
-              activeTab === tab.id
-                ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
-                : tab.count === 0
-                ? 'text-light-text-muted dark:text-dark-text-muted cursor-not-allowed opacity-50'
-                : 'text-light-text-secondary dark:text-dark-text-secondary hover:bg-light-surface dark:hover:bg-dark-surface'
-            }`}
-          >
-            <span>{tab.icon}</span>
-            <span>{tab.label}</span>
-            {tab.count > 0 && (
-              <span className={`px-1.5 py-0.5 rounded-full text-xs font-semibold ${
-                activeTab === tab.id ? 'bg-white/20' : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
-              }`}>
-                {tab.count}
-              </span>
-            )}
-          </button>
-        ))}
+        {tabs.map((tab) => {
+          const isDisabled = tab.id !== 'issues' && tab.count === 0;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              disabled={isDisabled}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap flex items-center gap-2 ${
+                activeTab === tab.id
+                  ? 'bg-light-accent-primary dark:bg-dark-accent-primary text-white'
+                  : isDisabled
+                  ? 'text-light-text-muted dark:text-dark-text-muted cursor-not-allowed opacity-50'
+                  : 'text-light-text-secondary dark:text-dark-text-secondary hover:bg-light-surface dark:hover:bg-dark-surface'
+              }`}
+            >
+              <span>{tab.icon}</span>
+              <span>{tab.label}</span>
+              {tab.count > 0 && (
+                <span className={`px-1.5 py-0.5 rounded-full text-xs font-semibold ${
+                  activeTab === tab.id ? 'bg-white/20' : 'bg-light-surface-elevated dark:bg-dark-surface-elevated'
+                }`}>
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Content */}
@@ -884,7 +897,7 @@ export function EnhancedAIReviewPanel({
                         <div className="space-y-1">
                           <button
                             onClick={() => handleFileClick(fromParsed.filePath, fromParsed.line)}
-                            className="text-left w-full font-mono text-xs text-light-accent-primary dark:text-dark-accent-primary hover:underline break-words"
+                            className="text-left w-full font-mono text-xs text-light-accent-primary dark:text-dark-accent-primary hover:underline break-all"
                             title={fromParsed.line ? `Jump to line ${fromParsed.line}` : 'Open file'}
                           >
                             {fromParsed.filePath}
@@ -917,7 +930,7 @@ export function EnhancedAIReviewPanel({
                         <div className="space-y-1">
                           <button
                             onClick={() => handleFileClick(toParsed.filePath, toParsed.line)}
-                            className="text-left w-full font-mono text-xs text-light-accent-primary dark:text-dark-accent-primary hover:underline break-words"
+                            className="text-left w-full font-mono text-xs text-light-accent-primary dark:text-dark-accent-primary hover:underline break-all"
                             title={toParsed.line ? `Jump to line ${toParsed.line}` : 'Open file'}
                           >
                             {toParsed.filePath}
@@ -1020,7 +1033,7 @@ export function EnhancedAIReviewPanel({
                         <button
                           key={fileIdx}
                           onClick={() => handleFileClick(file)}
-                          className="text-xs font-mono px-2 py-0.5 rounded bg-light-surface dark:bg-dark-surface text-light-accent-primary dark:text-dark-accent-primary hover:underline"
+                          className="text-xs font-mono px-2 py-0.5 rounded bg-light-surface dark:bg-dark-surface text-light-accent-primary dark:text-dark-accent-primary hover:underline break-all"
                         >
                           {file}
                         </button>

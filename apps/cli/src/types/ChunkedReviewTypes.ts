@@ -106,6 +106,7 @@ export interface ChunkReviewResult {
   callStacks?: CallStackInfo[];
   movedCode?: MovedCode[];
   refactorings?: Refactoring[];
+  summary_for_context?: string; // 1-line summary for global analysis
   semanticAnalysis?: string; // Keep as fallback/raw analysis
 
   // Legacy fields (kept for backward compatibility during transition)

@@ -578,6 +578,99 @@ export class ContextAnalyzer {
   }
 
   /**
+   * Extract signature and docstring using Tree-sitter
+   */
+  private async extractSignature(
+    filePath: string,
+    line: number,
+    column: number
+  ): Promise<string | null> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const ext = path.extname(filePath).slice(1);
+      const parser = this.parsers.get(ext);
+
+      if (!parser) return null;
+
+      const tree = parser.parse(content);
+      // Use Row/Column for Tree-sitter (0-indexed)
+      const position = { row: line - 1, column: Math.max(0, column - 1) };
+      const node = tree.rootNode.descendantForPosition(position, position);
+
+      if (!node) return null;
+
+      // Find the defining node (function, class, etc.)
+      let current: Parser.SyntaxNode | null = node;
+      while (current) {
+        if (
+          current.type.includes('declaration') ||
+          current.type.includes('definition') ||
+          current.type === 'class' ||
+          current.type === 'function' ||
+          current.type === 'method' ||
+          current.type === 'interface'
+        ) {
+          break;
+        }
+        current = current.parent;
+      }
+
+      const targetNode = current || node;
+      const lines = content.split('\n');
+      const startRow = targetNode.startPosition.row;
+
+      // Find where the body starts to get the signature only
+      let bodyStartRow = -1;
+      for (const child of targetNode.children) {
+        if (child.type === 'block' || child.type === 'function_body' || child.type === 'class_body' || child.type === 'statement_block') {
+          bodyStartRow = child.startPosition.row;
+          break;
+        }
+      }
+
+      let signature = '';
+      if (bodyStartRow === -1 || bodyStartRow === startRow) {
+        // Fallback: take the first line and truncate if it contains body start
+        signature = lines[startRow];
+        if (signature.includes('{')) {
+          signature = signature.split('{')[0].trim() + ' { ... }';
+        } else if (signature.includes(':') && (ext === 'py' || ext === 'kt')) {
+          signature = signature.split(':')[0].trim() + ': ...';
+        }
+      } else {
+        // Take lines from start to body start
+        signature = lines.slice(startRow, bodyStartRow).join('\n').trim() + ' { ... }';
+      }
+
+      const docstring = this.getDocstring(startRow, lines);
+      return docstring ? `${docstring}\n${signature}` : signature;
+    } catch (error) {
+      console.warn(`[ContextAnalyzer] Failed to extract signature for ${filePath}:${line}`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Get docstring/comments preceding a line
+   */
+  private getDocstring(startRow: number, lines: string[]): string {
+    const docLines: string[] = [];
+    let currentRow = startRow - 1;
+    while (currentRow >= 0) {
+      const line = lines[currentRow].trim();
+      if (line.startsWith('/**') || line.startsWith('*') || line.startsWith('//') || line.startsWith('///') || line.startsWith('#')) {
+        docLines.unshift(lines[currentRow]);
+        currentRow--;
+        // Limit docstring size
+        if (docLines.length > 10) break;
+      } else {
+        break;
+      }
+    }
+    return docLines.join('\n');
+  }
+
+  /**
    * Build context snippets for AI prompt
    */
   buildAIContext(results: ContextResult[]): string {
@@ -765,7 +858,8 @@ export class ContextAnalyzer {
           const isDef = await this.verifyDefinition(matchFilePath, matchLine, matchColumn, symbol.name);
           console.log(`[ContextAnalyzer] Verification result for ${matchFilePath}:${matchLine}: ${isDef}`);
           if (isDef) {
-            const context = await this.getContext(matchFilePath, matchLine, 5);
+            const context = (await this.extractSignature(matchFilePath, matchLine, matchColumn)) ||
+                            (await this.getContext(matchFilePath, matchLine, 5));
             locations.push({
               file: path.relative(worktreePath, matchFilePath),
               line: matchLine,
@@ -1057,7 +1151,8 @@ export class ContextAnalyzer {
                 continue;
               }
 
-              const context = await this.getContext(matchFilePath, matchLine, 5);
+              const context = (await this.extractSignature(matchFilePath, matchLine, matchColumn)) ||
+                              (await this.getContext(matchFilePath, matchLine, 5));
               locations.push({
                 file: path.relative(worktreePath, matchFilePath),
                 line: matchLine,

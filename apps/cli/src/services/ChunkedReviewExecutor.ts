@@ -419,55 +419,11 @@ export class ChunkedReviewExecutor {
     let jsonStructure = `
 {
   "summary": "Brief summary of changes in this chunk",
+  "summary_for_context": "One-line technical summary of changes in this chunk for PR-wide analysis",
   "criticalIssues": [{ "file": "path", "line": 123, "message": "issue description", "suggestion": "fix suggestion" }],
   "warnings": [],
-  "suggestions": []`;
-
-    if (options?.analyzeChangeIntent) {
-      const level = options.changeIntentLevel || 'both';
-      jsonStructure += `,\n  "changeIntents": [
-    { 
-      "file": "src/components/AdTable.vue", 
-      "level": "${level === 'both' ? 'file' : level}", 
-      "intent": "Pass pagination state to table", 
-      "motivation": "Allow parent control", 
-      "impact": "Local component update" 
-    },
-    { 
-      "file": "src/services/api.ts", 
-      "level": "${level === 'both' ? 'file' : level}", 
-      "intent": "Update API header", 
-      "motivation": "Fix upload bug", 
-      "impact": "Fixes file upload" 
-    }
-  ]`;
-    }
-    if (options?.analyzeBroaderImpact) {
-      const scope = options.impactScope === 'dependencies' ? 'Project|Dependencies' : (options.impactScope === 'project' ? 'Project' : 'Module');
-      jsonStructure += `,\n  "impactAnalysis": {
-    "scope": "${scope}", 
-    "affectedAreas": ["Ad Management UI", "Reporting System"], 
-    "breakingChanges": ["Renamed report column 'fee' to 'cost'"], 
-    "sideEffects": ["Pagination now controlled by parent"], 
-    "description": "Analysis of impact"
-  }`;
-    }
-    if (options?.generateCallStack) {
-      const format = options.callStackFormat || 'both';
-      jsonStructure += `,\n  "callStacks": [{"function": "processData", "file": "src/utils.ts", "callers": ["main"], ${format !== 'sequence' ? '"flowchart": "graph TD\\n A-->B"' : ''}${format !== 'flowchart' ? ', "sequence": "sequenceDiagram\\n A->>B: Call"' : ''}}]`;
-    }
-    
-    // Support both new 'useSemanticDiff' and legacy 'analyzeSemantic'
-    if (options?.useSemanticDiff || options?.analyzeSemantic) {
-      if (options?.detectMovedCode !== false) {
-        jsonStructure += `,\n  "movedCode": [{"from": "file:line", "to": "file:line", "lines": 10}]`;
-      }
-      if (options?.detectRefactoring !== false) {
-        jsonStructure += `,\n  "refactorings": [{"type": "extract_method", "description": "desc", "files": ["f1"]}]`;
-      }
-    }
-    
-    jsonStructure += `\n}`;
+  "suggestions": []
+}`;
 
     let instructions = `You are reviewing a subset of files from a larger pull request.
 
@@ -496,37 +452,11 @@ Please review these files and provide:
 
     const fileCount = chunk.files.length;
 
-    if (options?.analyzeChangeIntent) {
-      const level = options.changeIntentLevel || 'both';
-      instructions += `4. Change Intent Analysis (${level === 'file' ? 'File level only' : level === 'block' ? 'Block level only' : 'Both file and block levels'}) - **MANDATORY**
-   - **CRITICAL**: This chunk contains **${fileCount} files**. You MUST generate **exactly ${fileCount} objects** in the \`changeIntents\` array (one per file).
-   - Each object MUST have a unique \`file\` property matching one of the files above.\n`;
-    }
-    if (options?.analyzeBroaderImpact) {
-      const scope = options.impactScope || 'module';
-      instructions += `5. Impact Analysis (Scope: ${scope}) - **MANDATORY**\n`;
-    }
-    if (options?.generateCallStack) {
-      const format = options.callStackFormat || 'both';
-      instructions += `6. Call Stack Visualization (${format === 'flowchart' ? 'Flowchart only' : format === 'sequence' ? 'Sequence diagram only' : 'Both formats'}) - **MANDATORY**
-   - **Recommended**: Generate visualizations to aid understanding if possible.
-   - **Condition 1: Caller Provided/Known**:
-     - Generate a **Flowchart** (\`graph TD\`) or **Sequence Diagram** (\`sequenceDiagram\`).
-     - Show data flow direction or interaction order.
-   - **Condition 2: Abstract Class or Interface or Implementation**:
-     - Generate a **Class Diagram** (\`classDiagram\`).
-     - Place the Class Diagram code in the \`flowchart\` JSON field.
-   - **JSON Field Usage**:
-     - \`flowchart\`: Use for \`graph TD\` OR \`classDiagram\`.
-     - \`sequence\`: Use for \`sequenceDiagram\`.
-   - If exact callers are unknown and it's not an abstract/interface, you may skip this or use generic names (e.g., "Client").\n`;
-    }
-
-    // Support both new 'useSemanticDiff' and legacy 'analyzeSemantic'
-    if (options?.useSemanticDiff || options?.analyzeSemantic) {
-      instructions += `7. Semantic Analysis - **MANDATORY**
-   - Detect and report moved code blocks and refactoring patterns.\n`;
-    }
+    instructions += `
+    **IMPORTANT**: You are in the "Map" phase of a Map-Reduce review process.
+    - **DO NOT** perform global analysis (Change Intent, Impact Analysis, Call Stacks).
+    - **FOCUS ONLY** on Code Quality (Bugs, Security, Best Practices) for the specific files in this chunk.
+    - **MANDATORY**: Provide the \`summary_for_context\` field to help the "Reduce" phase understands what happened here.`;
 
     instructions += `
 Focus only on the files in this chunk. Be specific with file paths and line numbers.
@@ -537,49 +467,23 @@ ${jsonStructure}
 **STRICT GENERATION RULES:**
 1. **Valid JSON**: The response MUST be valid JSON. Do not include any text outside the JSON object.
 
-2. **Line Number Accuracy**:
+2. **summary_for_context**:
+   - Provide a CONCISE, one-line technical summary of the changes in this chunk.
+   - This will be used as input for a final high-level PR architect to understand the overall impact.
+   - Example: "Added pagination support to AdTable component and updated API header for file uploads."
+
+3. **Line Number Accuracy**:
    - **CRITICAL**: Reported line numbers MUST exist in the code context provided.
    - For added lines (starting with + in diff), count from the hunk header's NEW file start line.
    - For unchanged lines (starting with space), count continuously.
    - Do NOT report issues on removed lines (starting with -).
 
-3. **Change Intents**: 
-   - **CRITICAL**: You MUST generate a SEPARATE object for EACH file/change in the \`changeIntents\` array.
-   - **DO NOT** combine multiple files into a single object. 
-   - **DO NOT** put multiple file headers (e.g., "**File: ...**") inside the \`intent\` string.
-   - The \`intent\` field should be a concise description of the change for THAT SPECIFIC FILE only.
+   - **CRITICAL**: Reported line numbers MUST exist in the code context provided.
+   - For added lines (starting with + in diff), count from the hunk header's NEW file start line.
+   - For unchanged lines (starting with space), count continuously.
+   - Do NOT report issues on removed lines (starting with -).
    
-   **BAD EXAMPLE (DO NOT DO THIS)**:
-   \`\`\`json
-   "changeIntents": [
-     {
-       "file": "file1.ts",
-       "intent": "**File: file1.ts** Intent... **File: file2.ts** Intent..."
-     }
-   ]
-   \`\`\`
-
-   **GOOD EXAMPLE (DO THIS)**:
-   \`\`\`json
-   "changeIntents": [
-     { "file": "file1.ts", "intent": "Intent for file1" },
-     { "file": "file2.ts", "intent": "Intent for file2" }
-   ]
-   \`\`\`
-
-4. **Impact Analysis**:
-   - \`affectedAreas\`, \`breakingChanges\`, and \`sideEffects\` must be ARRAYS of strings.
-   - **DO NOT** return a single string with markdown bullet points.
-   - **BAD**: "affectedAreas": ["- Login\\n- User"]
-   - **GOOD**: "affectedAreas": ["Login", "User"]
-
-5. **Call Stacks**:
-   - The \`flowchart\` and \`sequence\` fields MUST contain raw Mermaid syntax (e.g., "graph TD...", "sequenceDiagram...").
-   - **CRITICAL**: Do NOT wrap the Mermaid code in markdown code blocks (\`\`\`mermaid\`) inside the JSON string data.
-   - **CRITICAL**: Do NOT include any markdown formatting inside the JSON values for these fields.
-   - Ensure special characters are properly escaped for valid JSON.
-
-6. **General**:
+4. **General**:
    - Ensure the response is valid JSON.
    - Escape all strings properly.
 `;
@@ -609,6 +513,7 @@ ${jsonStructure}
     callStacks?: CallStackInfo[];
     movedCode?: MovedCode[];
     refactorings?: Refactoring[];
+    summary_for_context?: string;
   } {
     try {
       // 1. Try to find JSON in markdown code blocks first (most reliable)
@@ -657,6 +562,7 @@ ${jsonStructure}
         callStacks: this.normalizeCallStacks(parsed.callStacks),
         movedCode: Array.isArray(parsed.movedCode) ? parsed.movedCode : undefined,
         refactorings: Array.isArray(parsed.refactorings) ? parsed.refactorings : undefined,
+        summary_for_context: parsed.summary_for_context,
 
         // Legacy / Fallback
         changeIntent: parsed.changeIntent,
@@ -1178,11 +1084,13 @@ ${jsonStructure}
       const refined = this.parseRefinedSummary(response.content);
       
       if (refined) {
-        console.log('[ChunkedReview] AI summary refinement successful');
+        console.log('[ChunkedReview] AI summary refinement (Reduce Phase) successful');
         return {
           ...mergedResult,
           summary: refined.summary || mergedResult.summary,
+          changeIntent: refined.changeIntent || mergedResult.changeIntent,
           impactAnalysis: refined.impactAnalysis || mergedResult.impactAnalysis,
+          callStacks: refined.callStacks || mergedResult.callStacks,
         };
       }
       
@@ -1201,48 +1109,61 @@ ${jsonStructure}
   private buildRefinementPrompt(mergedResult: MergedReviewResult, language: string): string {
     const langName = language === 'ko' ? '한국어' : language === 'ja' ? '日本語' : language === 'zh' ? '中文' : 'English';
     
-    const summaryText = mergedResult.summary || 'No summary available';
-    
-    const impactText = mergedResult.impactAnalysis 
-      ? JSON.stringify(mergedResult.impactAnalysis, null, 2)
-      : mergedResult.impact || 'No impact analysis available';
+    // Collect summaries from chunks for context
+    const chunkSummaries = mergedResult.chunkResults
+      .map((r, i) => `[Batch ${i + 1}] ${r.summary_for_context || r.summary || 'No summary'}`)
+      .join('\n');
 
-    return `You are a code review summarizer. Your task is to condense multiple per-file review summaries into ONE concise overall summary.
+    return `You are a Senior System Architect & Technical Lead. Your task is to perform a global "Reduce" analysis of a Pull Request based on summaries from individual file batch reviews.
 
-## Original Per-File Summaries:
-${summaryText}
+## PR Context (Summaries from Batch Reviews):
+${chunkSummaries}
 
-## Original Impact Analysis:
-${impactText}
+## Your Task:
+Provide a comprehensive, high-level analysis of the entire PR. 
 
-## Task:
-1. Create ONE concise summary (2-3 sentences max) that captures the overall purpose and impact of this PR
-2. Filter impact analysis to show ONLY significant items:
-   - Keep breaking changes (if any)
-   - Keep critical affected areas (max 3-5 items)
-   - Keep important side effects (max 3 items)
-   - Remove obvious, redundant, or minor items
+1. **Overall Summary**: A concise 1-2 sentence overview of the PR's purpose.
+2. **Global Change Intent**: Explain WHY these changes were made and their overall architectural goal.
+3. **Impact Analysis**: Assess the PR-wide impact, including scope, affected areas, and risks.
+4. **Logic Flow Diagrams**: Generate Mermaid.js code to visualize the overall logic or data flow.
 
-## Output Language: ${langName}
-
-## Response Format (JSON only):
+## JSON Response Format:
 {
-  "summary": "A concise 2-3 sentence summary of the entire PR",
+  "summary": "...",
+  "changeIntent": "...",
   "impactAnalysis": {
     "scope": "Module|Project|Dependencies",
-    "affectedAreas": ["area1", "area2"],
-    "breakingChanges": ["change1"],
-    "sideEffects": ["effect1"]
-  }
+    "affectedAreas": ["..."],
+    "breakingChanges": ["..."],
+    "sideEffects": ["..."],
+    "description": "..."
+  },
+  "callStacks": [
+    {
+      "function": "Main Execution Flow",
+      "file": "PR-Wide",
+      "flowchart": "graph TD\\n  A[Start] --> B[...]",
+      "sequence": "sequenceDiagram\\n  Participant A\\n  Participant B\\n  A->>B: Data"
+    }
+  ]
 }
 
-Respond with ONLY the JSON object, no markdown or explanation.`;
+## Constraints:
+- Mermaid diagrams: Output RAW mermaid syntax. DO NOT use markdown code blocks (\`\`\`mermaid\`) inside the JSON fields.
+- Escape all special characters for valid JSON.
+- Output Language: ${langName}.
+- Focus on the "Big Picture" and how these batched changes work together.`;
   }
 
   /**
    * Parse refined summary from AI response
    */
-  private parseRefinedSummary(content: string): { summary?: string; impactAnalysis?: ImpactAnalysis } | null {
+  private parseRefinedSummary(content: string): { 
+    summary?: string; 
+    changeIntent?: string;
+    impactAnalysis?: ImpactAnalysis;
+    callStacks?: CallStackInfo[];
+  } | null {
     try {
       // Try to extract JSON from response
       let jsonContent = content.trim();
@@ -1264,9 +1185,11 @@ Respond with ONLY the JSON object, no markdown or explanation.`;
       
       return {
         summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
+        changeIntent: typeof parsed.changeIntent === 'string' ? parsed.changeIntent : undefined,
         impactAnalysis: parsed.impactAnalysis && typeof parsed.impactAnalysis === 'object' 
           ? parsed.impactAnalysis as ImpactAnalysis 
           : undefined,
+        callStacks: Array.isArray(parsed.callStacks) ? parsed.callStacks as CallStackInfo[] : undefined,
       };
     } catch (error) {
       console.error('[ChunkedReview] Failed to parse refined summary:', error);
