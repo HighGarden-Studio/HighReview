@@ -42,10 +42,11 @@ export function logLSPStatus(languageId: string): void {
 export function registerTreeSitterActions(
   editor: monaco.editor.IStandaloneCodeEditor,
   callbacks: TreeSitterActionCallbacks
-): void {
+): monaco.IDisposable {
   console.log('[EditorService] Registering Tree-sitter based code navigation actions');
 
   const { worktreePath, repoRoot, onNavigateToLocation, onShowReferences, onSearchInProject } = callbacks;
+  const disposables: monaco.IDisposable[] = [];
 
   // Helper function to get file path from URI
   const getFilePath = (uri: monaco.Uri): string => {
@@ -63,7 +64,7 @@ export function registerTreeSitterActions(
   };
 
   // Go to Definition (F12)
-  editor.addAction({
+  disposables.push(editor.addAction({
     id: 'highreview.action.goToDefinition',
     label: 'Go to Definition',
     keybindings: [monaco.KeyCode.F12],
@@ -117,7 +118,7 @@ export function registerTreeSitterActions(
         console.error('[EditorService] Failed to find definition:', error);
       }
     }
-  });
+  }));
 
   // Helper to find references
   const findAllReferences = async (ed: monaco.editor.ICodeEditor, position: monaco.Position) => {
@@ -207,7 +208,7 @@ export function registerTreeSitterActions(
   };
 
   // Find All References (Shift+F12)
-  editor.addAction({
+  disposables.push(editor.addAction({
     id: 'highreview.action.findAllReferences',
     label: 'Find All References',
     keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
@@ -219,10 +220,10 @@ export function registerTreeSitterActions(
         await findAllReferences(ed, position);
       }
     }
-  });
+  }));
 
   // Handle Cmd/Ctrl + Click for Find All References
-  editor.onMouseDown((e) => {
+  disposables.push(editor.onMouseDown((e) => {
     if (e.event.leftButton && (e.event.metaKey || e.event.ctrlKey)) {
       const position = e.target.position;
       if (position && e.target.type === monaco.editor.MouseTargetType.CONTENT_TEXT) {
@@ -235,10 +236,10 @@ export function registerTreeSitterActions(
         e.event.stopPropagation();
       }
     }
-  });
+  }));
 
   // Go to Type Definition
-  editor.addAction({
+  disposables.push(editor.addAction({
     id: 'highreview.action.goToTypeDefinition',
     label: 'Go to Type Definition',
     contextMenuGroupId: 'navigation',
@@ -291,10 +292,10 @@ export function registerTreeSitterActions(
         console.error('[EditorService] Failed to find type definition:', error);
       }
     }
-  });
+  }));
 
   // Go to Implementation
-  editor.addAction({
+  disposables.push(editor.addAction({
     id: 'highreview.action.goToImplementation',
     label: 'Go to Implementation',
     contextMenuGroupId: 'navigation',
@@ -366,10 +367,10 @@ export function registerTreeSitterActions(
         console.error('[EditorService] Failed to find implementations:', error);
       }
     }
-  });
+  }));
 
   // Find in Project (Alt+Shift+F12) - already implemented with ripgrep
-  editor.addAction({
+  disposables.push(editor.addAction({
     id: 'highreview.action.findInProject',
     label: 'Find in Project...',
     keybindings: [monaco.KeyMod.Alt | monaco.KeyMod.Shift | monaco.KeyCode.F12],
@@ -407,7 +408,14 @@ export function registerTreeSitterActions(
         console.error('[EditorService] Failed to search in project:', error);
       }
     }
-  });
+  }));
 
   console.log('[EditorService] Registered Tree-sitter based code navigation actions');
+
+  return {
+    dispose: () => {
+      disposables.forEach(d => d.dispose());
+    }
+  };
 }
+

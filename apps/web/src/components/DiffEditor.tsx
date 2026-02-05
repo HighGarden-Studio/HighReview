@@ -185,6 +185,7 @@ function DiffEditorComponent({
   const scrollPositionRef = useRef<number>(0); // Store scroll position
   const prCommentDecorationsRef = useRef<string[]>([]); // Store PR comment decoration IDs
   const prCommentZonesRef = useRef<Map<number, { zoneId: string; widget: PRCommentZoneWidget }>>(new Map());
+  const disposablesRef = useRef<monaco.IDisposable[]>([]);
   const [activeCommentLine, setActiveCommentLine] = useState<{
     line: number;
     endLine?: number;
@@ -299,7 +300,7 @@ function DiffEditorComponent({
         if (modifiedEditor) {
           // Register Tree-sitter based code navigation actions
           if (worktreePath && repoRoot) {
-            registerTreeSitterActions(modifiedEditor, {
+            const treeSitterDisposables = registerTreeSitterActions(modifiedEditor, {
               worktreePath,
               repoRoot,
               onShowReferences: (references, title) => {
@@ -321,6 +322,7 @@ function DiffEditorComponent({
                 }
               },
             });
+            disposablesRef.current.push(treeSitterDisposables);
           }
 
           // Tree-sitter navigation features are now active
@@ -350,7 +352,7 @@ function DiffEditorComponent({
             return popupTop;
           };
 
-          modifiedEditor.onMouseDown((e) => {
+          disposablesRef.current.push(modifiedEditor.onMouseDown((e) => {
             const lineNumber = e.target.position?.lineNumber;
 
             // Check for immediate actions only (AI review)
@@ -368,10 +370,10 @@ function DiffEditorComponent({
                 }
               }
             }
-          });
+          }));
 
           // Handle mouseUp to check selection after drag
-          modifiedEditor.onMouseUp((e) => {
+          disposablesRef.current.push(modifiedEditor.onMouseUp((e) => {
             const lineNumber = e.target.position?.lineNumber;
 
             if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
@@ -407,14 +409,14 @@ function DiffEditorComponent({
                 });
               }
             }
-          });
+          }));
 
           // Note: LSP-based code navigation has been disabled in favor of Tree-sitter approach.
           // "Find in Project" (Alt+Shift+F12) is available via ripgrep-based search.
 
           // Add "Comment on Selection" action to context menu
           if (onAddComment) {
-            modifiedEditor.addAction({
+            disposablesRef.current.push(modifiedEditor.addAction({
               id: 'add-comment-selection-diff',
               label: 'Add Comment on Selection',
               keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyC],
@@ -435,7 +437,7 @@ function DiffEditorComponent({
                   top: safeTop,
                 });
               },
-            });
+            }));
           }
         }
       }
@@ -451,6 +453,10 @@ function DiffEditorComponent({
 
     return () => {
       setIsEditorReady(false);
+
+      disposablesRef.current.forEach(d => d.dispose());
+      disposablesRef.current = [];
+
       // Clean up zone widgets first
       if (diffEditorRef.current && prCommentZonesRef.current.size > 0) {
         const modifiedEditor = diffEditorRef.current.getModifiedEditor();

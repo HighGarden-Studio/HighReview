@@ -192,6 +192,7 @@ function CodeEditorComponent({
   const aiReviewDataRef = useRef<AIReviewDecoration[]>([]);
   const previousAIReviewDataRef = useRef<string>(''); // Store stringified data to compare
   const scrollPositionRef = useRef<number>(0); // Store scroll position
+  const disposablesRef = useRef<monaco.IDisposable[]>([]);
   const [activeCommentLine, setActiveCommentLine] = useState<{
     line: number;
     endLine?: number;
@@ -281,7 +282,7 @@ function CodeEditorComponent({
 
       // Register Tree-sitter based code navigation actions
       if (worktreePath && repoRoot) {
-        registerTreeSitterActions(editorRef.current, {
+        const treeSitterDisposables = registerTreeSitterActions(editorRef.current, {
           worktreePath,
           repoRoot,
           onShowReferences: (references, title) => {
@@ -303,10 +304,11 @@ function CodeEditorComponent({
             }
           },
         });
+        disposablesRef.current.push(treeSitterDisposables);
       }
 
       // Add click handler for glyph margin and line numbers (for adding comments and AI review)
-      editorRef.current.onMouseDown((e) => {
+      disposablesRef.current.push(editorRef.current.onMouseDown((e) => {
       const lineNumber = e.target.position?.lineNumber;
 
       // Check for immediate actions only (AI review)
@@ -324,7 +326,7 @@ function CodeEditorComponent({
           }
         }
       }
-    });
+      }));
 
       // Helper function to calculate safe popup position within viewport
       const calculateSafePopupPosition = (startLine: number): number => {
@@ -353,7 +355,7 @@ function CodeEditorComponent({
       };
 
       // Handle mouseUp to check selection after drag
-      editorRef.current.onMouseUp((e) => {
+      disposablesRef.current.push(editorRef.current.onMouseUp((e) => {
       const lineNumber = e.target.position?.lineNumber;
 
       if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
@@ -389,14 +391,14 @@ function CodeEditorComponent({
           });
         }
       }
-    });
+      }));
 
       // Note: LSP-based code navigation has been disabled in favor of Tree-sitter approach.
       // "Find in Project" (Alt+Shift+F12) is available via ripgrep-based search.
 
       // Add "Comment on Selection" action to context menu
       if (onAddComment) {
-        editorRef.current.addAction({
+        disposablesRef.current.push(editorRef.current.addAction({
         id: 'add-comment-selection',
         label: 'Add Comment on Selection',
         keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyC],
@@ -417,7 +419,7 @@ function CodeEditorComponent({
             top: safeTop,
           });
         },
-        });
+        }));
       }
 
       setIsEditorReady(true);
@@ -430,6 +432,10 @@ function CodeEditorComponent({
 
     return () => {
       setIsEditorReady(false);
+
+      disposablesRef.current.forEach(d => d.dispose());
+      disposablesRef.current = [];
+
       // Clean up zone widgets first
       if (editorRef.current && prCommentZonesRef.current.size > 0) {
         editorRef.current.changeViewZones((changeAccessor) => {
