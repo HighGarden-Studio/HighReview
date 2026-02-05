@@ -1713,6 +1713,16 @@ export function ReviewPage({
               {/* PR Info: Number, State, AI Reviewed Badge */}
               {prData?.pullRequest && prInfo && (
                 <>
+                  {/* Repository Name */}
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-[#f0f7ff] dark:bg-[#1a2b3e] rounded border border-[#007acc]/30 dark:border-[#007acc]/50">
+                    <svg className="w-3.5 h-3.5 text-[#007acc] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    </svg>
+                    <span className="text-xs font-bold text-[#007acc] dark:text-[#40a9ff]">
+                      {repo}
+                    </span>
+                  </div>
+
                   <div className="flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-[#2d2d30] rounded border border-[#d1d1d1] dark:border-[#454545]">
                     <svg className="w-3.5 h-3.5 text-[#007acc] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
