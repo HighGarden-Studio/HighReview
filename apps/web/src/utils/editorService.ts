@@ -119,6 +119,93 @@ export function registerTreeSitterActions(
     }
   });
 
+  // Helper to find references
+  const findAllReferences = async (ed: monaco.editor.ICodeEditor, position: monaco.Position) => {
+    const model = ed.getModel();
+    if (!model || !position) return;
+
+    try {
+      const filePath = getFilePath(model.uri);
+      console.log('[EditorService] Find References:', { filePath, line: position.lineNumber, column: position.column });
+
+      const response = await fetch('/api/code-analysis/references', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          worktreePath,
+          filePath,
+          line: position.lineNumber,
+          column: position.column,
+        }),
+      });
+
+      if (!response.ok) {
+        console.error('[EditorService] Failed to find references:', response.statusText);
+        return;
+      }
+
+      const result = await response.json();
+      console.log('[EditorService] References result:', result);
+
+      if (!result.locations || result.locations.length === 0) {
+        console.log('[EditorService] No references found');
+        return;
+      }
+
+      // If only one reference, navigate to it
+      if (result.locations.length === 1) {
+        const location = result.locations[0];
+        const targetUri = `file://${worktreePath}/${location.file}`;
+        const currentUri = model.uri.toString();
+
+        // Check if it's the same position
+        if (currentUri === targetUri && location.line === position.lineNumber) {
+          console.log('[EditorService] Only reference is the definition itself');
+          return;
+        }
+
+        if (currentUri !== targetUri && onNavigateToLocation) {
+          onNavigateToLocation(targetUri, location.line, location.column);
+        } else {
+          ed.revealPositionInCenter({ lineNumber: location.line, column: location.column });
+          ed.setPosition({ lineNumber: location.line, column: location.column });
+          ed.focus();
+        }
+        return;
+      }
+
+      // Multiple references: show in references panel
+      if (onShowReferences) {
+        const references: CodeReference[] = result.locations.map((loc: any) => ({
+          uri: `file://${worktreePath}/${loc.file}`,
+          range: {
+            startLineNumber: loc.line,
+            startColumn: loc.column,
+            endLineNumber: loc.line,
+            endColumn: loc.column + result.symbolName.length,
+          },
+          preview: loc.context,
+        }));
+        onShowReferences(references, `${result.locations.length} references to '${result.symbolName}'`);
+      } else {
+        // Fallback: navigate to first reference
+        const location = result.locations[0];
+        const targetUri = `file://${worktreePath}/${location.file}`;
+        const currentUri = model.uri.toString();
+
+        if (currentUri !== targetUri && onNavigateToLocation) {
+          onNavigateToLocation(targetUri, location.line, location.column);
+        } else {
+          ed.revealPositionInCenter({ lineNumber: location.line, column: location.column });
+          ed.setPosition({ lineNumber: location.line, column: location.column });
+          ed.focus();
+        }
+      }
+    } catch (error) {
+      console.error('[EditorService] Failed to find references:', error);
+    }
+  };
+
   // Find All References (Shift+F12)
   editor.addAction({
     id: 'highreview.action.findAllReferences',
@@ -127,89 +214,25 @@ export function registerTreeSitterActions(
     contextMenuGroupId: 'navigation',
     contextMenuOrder: 1.3,
     run: async (ed) => {
-      const model = ed.getModel();
       const position = ed.getPosition();
-      if (!model || !position) return;
+      if (position) {
+        await findAllReferences(ed, position);
+      }
+    }
+  });
 
-      try {
-        const filePath = getFilePath(model.uri);
-        console.log('[EditorService] Find References:', { filePath, line: position.lineNumber, column: position.column });
-
-        const response = await fetch('/api/code-analysis/references', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            worktreePath,
-            filePath,
-            line: position.lineNumber,
-            column: position.column,
-          }),
-        });
-
-        if (!response.ok) {
-          console.error('[EditorService] Failed to find references:', response.statusText);
-          return;
-        }
-
-        const result = await response.json();
-        console.log('[EditorService] References result:', result);
-
-        if (!result.locations || result.locations.length === 0) {
-          console.log('[EditorService] No references found');
-          return;
-        }
-
-        // If only one reference, navigate to it
-        if (result.locations.length === 1) {
-          const location = result.locations[0];
-          const targetUri = `file://${worktreePath}/${location.file}`;
-          const currentUri = model.uri.toString();
-
-          // Check if it's the same position
-          if (currentUri === targetUri && location.line === position.lineNumber) {
-            console.log('[EditorService] Only reference is the definition itself');
-            return;
-          }
-
-          if (currentUri !== targetUri && onNavigateToLocation) {
-            onNavigateToLocation(targetUri, location.line, location.column);
-          } else {
-            ed.revealPositionInCenter({ lineNumber: location.line, column: location.column });
-            ed.setPosition({ lineNumber: location.line, column: location.column });
-            ed.focus();
-          }
-          return;
-        }
-
-        // Multiple references: show in references panel
-        if (onShowReferences) {
-          const references: CodeReference[] = result.locations.map((loc: any) => ({
-            uri: `file://${worktreePath}/${loc.file}`,
-            range: {
-              startLineNumber: loc.line,
-              startColumn: loc.column,
-              endLineNumber: loc.line,
-              endColumn: loc.column + result.symbolName.length,
-            },
-            preview: loc.context,
-          }));
-          onShowReferences(references, `${result.locations.length} references to '${result.symbolName}'`);
-        } else {
-          // Fallback: navigate to first reference
-          const location = result.locations[0];
-          const targetUri = `file://${worktreePath}/${location.file}`;
-          const currentUri = model.uri.toString();
-
-          if (currentUri !== targetUri && onNavigateToLocation) {
-            onNavigateToLocation(targetUri, location.line, location.column);
-          } else {
-            ed.revealPositionInCenter({ lineNumber: location.line, column: location.column });
-            ed.setPosition({ lineNumber: location.line, column: location.column });
-            ed.focus();
-          }
-        }
-      } catch (error) {
-        console.error('[EditorService] Failed to find references:', error);
+  // Handle Cmd/Ctrl + Click for Find All References
+  editor.onMouseDown((e) => {
+    if (e.event.leftButton && (e.event.metaKey || e.event.ctrlKey)) {
+      const position = e.target.position;
+      if (position && e.target.type === monaco.editor.MouseTargetType.CONTENT_TEXT) {
+        // Move cursor to click position first
+        editor.setPosition(position);
+        findAllReferences(editor, position);
+        
+        // Prevent default browser/Monaco behavior for Cmd+Click (which is usually Go to Definition)
+        e.event.preventDefault();
+        e.event.stopPropagation();
       }
     }
   });
