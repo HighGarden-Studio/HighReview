@@ -242,7 +242,7 @@ export function HomePage() {
             <p className="text-sm text-light-text-muted dark:text-dark-text-muted">
               Frontend:{' '}
               <code className="text-light-accent-primary dark:text-dark-accent-primary">
-                localhost:5173
+                localhost:5273
               </code>
               {' • '}
               Backend:{' '}

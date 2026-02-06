@@ -32,7 +32,7 @@ export async function startServer(port: number) {
 
   // CORS 설정 (개발 모드에서 Vite dev server와 통신)
   await fastify.register(fastifyCors, {
-    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: ['http://localhost:5273', 'http://127.0.0.1:5273'],
     credentials: true,
   });
 

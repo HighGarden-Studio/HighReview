@@ -7,16 +7,19 @@ The AI Review system has been fixed to use the **Anthropic API** directly instea
 ### What Was Wrong
 
 Previously, the code tried to call:
+
 ```bash
 claude code --prompt-file /path/to/file
 ```
 
 This command **does not exist** and was causing all AI reviews to fail with:
+
 ```
 error: unknown option '--prompt-file'
 ```
 
 The system would catch this error and return an empty fallback review, which is why you saw:
+
 - `filesReviewed: 9` (files were correctly read)
 - `totalIssues: 0` (AI never actually reviewed them)
 - Response came immediately (because it was just returning fallback)
@@ -24,6 +27,7 @@ The system would catch this error and return an empty fallback review, which is 
 ### What Was Fixed
 
 **Modified Files:**
+
 - [AIReviewService.ts:1-5](apps/cli/src/services/AIReviewService.ts#L1-5) - Added Anthropic SDK import
 - [AIReviewService.ts:65-78](apps/cli/src/services/AIReviewService.ts#L65-78) - Added Anthropic client initialization
 - [AIReviewService.ts:449-502](apps/cli/src/services/AIReviewService.ts#L449-502) - Replaced broken CLI call with proper API call
@@ -31,6 +35,7 @@ The system would catch this error and return an empty fallback review, which is 
 - [.env.example](/.env.example) - Added ANTHROPIC_API_KEY requirement
 
 **Key Changes:**
+
 1. Now uses `@anthropic-ai/sdk` package (already installed)
 2. Calls `anthropic.messages.create()` with proper API parameters
 3. Uses Claude Sonnet 4 model (`claude-sonnet-4-20250514`)
@@ -76,6 +81,7 @@ npm run dev
 ```
 
 You should now see:
+
 ```
 🚀 Starting HighReview server...
 ✓ Server running at http://localhost:8765
@@ -86,7 +92,7 @@ You should now see:
 
 ### Step 4: Test AI Review
 
-1. Open HighReview in browser: http://localhost:5173
+1. Open HighReview in browser: http://localhost:5273
 2. Navigate to a PR
 3. Click "Start Review" with AI options enabled
 4. Wait for real AI review (will take 30-60 seconds for proper analysis)
@@ -159,10 +165,12 @@ All of this is packaged into a comprehensive prompt and sent to Claude Sonnet 4 
 ## Cost Considerations
 
 Anthropic API pricing (as of January 2025):
+
 - Input: $3 per million tokens
 - Output: $15 per million tokens
 
 Typical PR review:
+
 - Input: 30,000-50,000 tokens (~$0.10-0.15)
 - Output: 2,000-5,000 tokens (~$0.03-0.08)
 - **Total per review: ~$0.13-0.23**
@@ -178,11 +186,13 @@ For 100 reviews per month: ~$13-23
 ### Error: "401 Unauthorized"
 
 **Possible causes:**
+
 1. Invalid API key - check for typos
 2. API key expired - generate new key
 3. API key not from Anthropic - must start with `sk-ant-`
 
 **Solution:**
+
 ```bash
 # Verify your .env file
 cat /Users/highgarden/Developments/AI/HighReview/.env
@@ -194,17 +204,20 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### AI Review Still Returns Empty Results
 
 **Check server logs for:**
+
 ```
 [AI Review] Claude AI API call failed: [error details]
 ```
 
 **Common issues:**
+
 1. Network connectivity - check internet connection
 2. API rate limit - wait and retry
 3. Invalid API key - verify in console.anthropic.com
 4. Prompt too large - try with smaller PR
 
 **Solution:**
+
 ```bash
 # Check server logs in terminal running `npm run dev`
 # Look for detailed error information
@@ -219,6 +232,7 @@ This is now **expected behavior** for proper AI analysis!
 - Large PRs (2000+ lines): 90-180 seconds
 
 If it takes > 3 minutes, check:
+
 1. API timeout settings (currently 120 seconds)
 2. Network latency
 3. PR size (very large PRs may need chunking)
@@ -229,14 +243,17 @@ Current settings in [AIReviewService.ts:466-470](apps/cli/src/services/AIReviewS
 
 ```typescript
 const message = await this.anthropic.messages.create({
-  model: 'claude-sonnet-4-20250514', // Latest Sonnet - balance of speed/quality
-  max_tokens: 16000,                 // Increased for detailed reviews
-  temperature: 0.3,                  // Lower = more focused and consistent
-  messages: [ /* prompt */ ],
+  model: "claude-sonnet-4-20250514", // Latest Sonnet - balance of speed/quality
+  max_tokens: 16000, // Increased for detailed reviews
+  temperature: 0.3, // Lower = more focused and consistent
+  messages: [
+    /* prompt */
+  ],
 });
 ```
 
 **Why Claude Sonnet 4:**
+
 - Better code understanding than Sonnet 3.5
 - Faster than Opus
 - Lower cost than Opus
@@ -244,6 +261,7 @@ const message = await this.anthropic.messages.create({
 
 **To use a different model:**
 Edit [AIReviewService.ts:466](apps/cli/src/services/AIReviewService.ts#L466):
+
 ```typescript
 model: 'claude-opus-4-20250514',  // For highest quality (slower, more expensive)
 // or

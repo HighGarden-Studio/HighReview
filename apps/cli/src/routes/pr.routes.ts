@@ -411,7 +411,22 @@ export async function prRoutes(fastify: FastifyInstance) {
         console.warn('[PR AI Review] Will fallback to git diff only (less robust against stale branches)');
       }
 
-      const reviewResult = await aiReviewService.reviewPR(worktreePath, baseBranch, language, options, allowedFiles);
+      const reviewResult = await aiReviewService.reviewPR(
+        worktreePath,
+        baseBranch,
+        language,
+        {
+          ...options,
+          prInfo: {
+            owner,
+            repo,
+            prNumber,
+            title: prData.title,
+            description: prData.body
+          }
+        },
+        allowedFiles
+      );
 
       console.log('[PR AI Review] Review completed:', {
         filesReviewed: reviewResult.filesReviewed,
@@ -571,7 +586,17 @@ export async function prRoutes(fastify: FastifyInstance) {
           worktreePath,
           baseBranch,
           language,
-          { ...options, useChunkedReview: true, prInfo: { owner, repo, prNumber } },
+          {
+            ...options,
+            useChunkedReview: true,
+            prInfo: {
+              owner,
+              repo,
+              prNumber,
+              title: prData.title,
+              description: prData.body
+            }
+          },
           allowedFiles,
           onProgress
         );

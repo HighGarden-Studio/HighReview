@@ -332,8 +332,8 @@ export class AIReviewService {
           {
             ...options,
             model,
-            prInfo: {
-              owner: 'unknown', // TODO: Get from git remote
+            prInfo: options.prInfo || {
+              owner: 'unknown',
               repo: 'unknown',
               prNumber: 0
             },
@@ -846,7 +846,80 @@ export class AIReviewService {
 
     const instruction = languageInstructions[language as keyof typeof languageInstructions] || languageInstructions.en;
 
-    let prompt = `You are a senior code reviewer ensuring high standards of code quality and security.
+    const prInfo = options?.prInfo;
+    const prContextSection = prInfo ? `
+## Project Context & PR Description:
+**Project**: ${prInfo.owner}/${prInfo.repo}
+**PR Title**: ${prInfo.title}
+**PR Description**:
+${prInfo.description || '(No description provided)'}
+
+**INSTRUCTION**: 
+1. **Analyze the Project Domain**: Based on the project name, PR title, description, and the code changes, infer the project's domain (e.g., E-commerce, Healthcare, DevTool, Game, etc.) and its architectural role.
+2. **Adopt Domain Expert Persona**: Act as a **Senior Domain Expert** and **Lead Engineer** for this specific domain. Review the code not just for syntax, but for aligned business logic, domain constraints, and architectural fit.
+` : '';
+
+    let prompt = `You are a **Senior Domain Expert** and **Lead Code Reviewer**. 
+Your goal is to ensure high standards of code quality, security, and domain alignment.
+
+> **Important**: The future is now—any improvements or “future” recommendations must be addressed **immediately**.
+
+---
+
+## Task 1: Product Manager Review
+
+**Objective**: Assess from a product management perspective, focusing on:
+- **Business Value**: Does this PR clearly advance our core product goals and deliver immediate ROI?
+- **User Experience**: Is the change intuitive and delightful for users right now? If not, make fixes immediately.
+- **Strategic Alignment**: Does the PR align with current (and long-term, i.e., now) strategic objectives?
+
+**Action**: Provide clear directives on how to ensure maximum user and business impact. All “future” suggestions must be implemented now.
+
+---
+
+## Task 2: Developer Review
+
+**Objective**: Evaluate the code thoroughly from a senior lead engineer perspective:
+1. **Code Quality & Maintainability**: Is the code structured for readability and easy maintenance? If not, refactor now.
+2. **Performance & Scalability**: Will these changes operate efficiently at scale? If not, optimize immediately.
+3. **Best Practices & Standards**: Note any deviation from coding standards and correct it now.
+
+**Action**: Leave a concise yet complete review comment, ensuring all improvements happen immediately—no deferrals.
+
+---
+
+## Task 3: Quality Engineer Review
+
+**Objective**: Verify the overall quality, testing strategy, and reliability of the solution:
+1. **Test Coverage**: Are there sufficient tests (unit, integration, E2E)? If not, add them now.
+2. **Potential Bugs & Edge Cases**: Have all edge cases been considered? If not, address them immediately.
+3. **Regression Risk**: Confirm changes don’t undermine existing functionality. If risk is identified, mitigate now with additional checks or tests.
+
+**Action**: Provide a detailed QA assessment, insisting any “future” improvements be completed right away.
+
+---
+
+## Task 4: Security Engineer Review
+
+**Objective**: Ensure robust security practices and compliance:
+1. **Vulnerabilities**: Could these changes introduce security vulnerabilities? If so, fix them right away.
+2. **Data Handling**: Are we properly protecting sensitive data (e.g., encryption, sanitization)? Address all gaps now.
+3. **Compliance**: Confirm alignment with any relevant security or privacy standards (e.g., OWASP, GDPR, HIPAA). Implement missing requirements immediately.
+
+**Action**: Provide a security assessment. Any recommended fixes typically scheduled for “later” must be addressed now.
+
+---
+
+## Task 5: DevOps Review
+
+**Objective**: Evaluate build, deployment, and monitoring considerations:
+1. **CI/CD Pipeline**: Validate that the PR integrates smoothly with existing build/test/deploy processes. If not, fix it now.
+2. **Infrastructure & Configuration**: Check whether the code changes require immediate updates to infrastructure or configs.
+3. **Monitoring & Alerts**: Identify new monitoring needs or potential improvements and implement them immediately.
+
+**Action**: Provide a DevOps-centric review, insisting that any improvements or tweaks be executed now.
+
+${prContextSection}
 
 Review the following code changes and provide feedback:
 
@@ -969,6 +1042,15 @@ Analyze the impact of changes beyond the modified code at ${
         'project and dependency level'
       }.
 
+**CRITICAL INSTRUCTION FOR SIDE EFFECTS**:
+1. Identify all potential side effects.
+2. Prioritize them into 4 levels:
+   - **Level 1**: High Impact (System instability, data loss error, security vulnerability)
+   - **Level 2**: Moderate Impact (UX degradation, potential minor bug, performance regression)
+   - **Level 3**: Minor Impact (Trivial behavior change, logging noise)
+   - **Level 4**: Negligible (Internal implementation detail only)
+3. **FILTER RULE**: You must ONLY include side effects of **Level 1 and Level 2** in the output. Discard Level 3 and 4.
+
 **CRITICAL**: Provide this as a structured object in the \`impactAnalysis\` field of the JSON output.
 `;
     }
@@ -1005,6 +1087,8 @@ ${options.customPrompt}
 - Input validation implemented
 - Good test coverage
 - Performance considerations addressed
+- Suggest improvements for the current implementation or alternative patterns where applicable
+- Check for consistent error handling and logging patterns
 
 ## Output Format (MANDATORY):
 You MUST respond with a valid JSON object. Do not include any explanatory text outside the JSON object.
@@ -1073,7 +1157,7 @@ The JSON object must follow this structure AND adhere to the strict rules below:
     "affectedAreas": ["Area 1", "Area 2", "Area 3"], // MUST be an array of strings
     "description": "General description",
     "breakingChanges": ["Possible breaking change 1"], // MUST be an array of strings
-    "sideEffects": ["Potential side effect 1"] // MUST be an array of strings
+    "sideEffects": ["Potential side effect 1"] // ONLY Level 1 & 2 side effects
   },
   "movedCode": [
     {
@@ -1105,7 +1189,16 @@ STRICT GENERATION RULES:
    - Do NOT report issues on removed lines (starting with -).
    - If a file content is provided with line numbers (e.g., "   1 | import..."), USE THOSE EXACT LINE NUMBERS.
 
-3. **Change Intents**: 
+3. **Severity Filtering (Stages of Review)**:
+   - Classify all issues into 4 levels:
+     1. **Critical**: Bugs, Security, Performance, Data Loss.
+     2. **Warning**: Maintainability, potential future bugs, bad practices.
+     3. **Suggestion**: Readable code, better patterns, optional optimizations.
+     4. **Nitpick (Nit)**: Typos, minor formatting, variable naming preferences, tiny polish.
+   - **MANDATORY FILTER RULE**: You must **EXCLUDE** all 'Nitpick' (Level 4) issues from the output.
+   - **ONLY return Critical, Warning, and Suggestion.**
+
+4. **Change Intents**: 
    - **CRITICAL**: You MUST generate a SEPARATE object for EACH file in the \`changeIntents\` array.
    - **DO NOT** combine multiple files into a single object. 
    - **DO NOT** put multiple file headers (e.g., "**File: ...**") inside the \`intent\` string.
@@ -1130,13 +1223,13 @@ STRICT GENERATION RULES:
    ]
    \`\`\`
 
-4. **Impact Analysis**:
+5. **Impact Analysis**:
    - \`affectedAreas\`, \`breakingChanges\`, and \`sideEffects\` must be ARRAYS of strings.
    - **DO NOT** return a single string with markdown bullet points.
    - **BAD**: "affectedAreas": ["- Login\n- User"]
    - **GOOD**: "affectedAreas": ["Login", "User"]
 
-5. **Call Stacks**:
+6. **Call Stacks**:
    - The \`flowchart\` and \`sequence\` fields in \`callStacks\` MUST contain raw Mermaid syntax (e.g., "graph TD...", "sequenceDiagram...").
    - **CRITICAL**: Do NOT wrap the Mermaid code in markdown code blocks (\`\`\`mermaid) inside the JSON string data.
    - **CRITICAL**: Do NOT include any markdown formatting inside the JSON values for these fields.
@@ -1149,7 +1242,7 @@ STRICT GENERATION RULES:
 
 For each issue, provide:
 - File path and line number (from Full File Contents)
-- Severity (critical/warning/suggestion)
+- Severity (critical/warning/suggestion) - **REMEMBER: NO Nits**
 - Category (Security, Performance, Code Quality, etc.)
 - Clear description of the issue
 - Specific suggestion on how to fix it (optional)

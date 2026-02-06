@@ -119,7 +119,7 @@ Your responsibilities:
       // Use claude CLI in non-interactive mode with print flag
       const { stdout, stderr } = await execa('claude', ['--print', '--no-session-persistence'], {
         input: fullPrompt,
-        timeout: 60000, // 60 second timeout
+        timeout: 300000, // 300 second timeout (5 minutes)
         maxBuffer: 10 * 1024 * 1024, // 10MB buffer
       });
 

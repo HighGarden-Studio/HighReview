@@ -52,6 +52,7 @@ interface EnhancedAIReviewResult {
   impactAnalysis?: ImpactAnalysis;
   movedCode?: Array<{ from: string; to: string; lines: number }>;
   refactorings?: Array<{ type: string; description: string; files: string[] }>;
+  globalSuggestions?: string[];
 }
 
 interface AIReviewMetadata {
@@ -95,6 +96,10 @@ export function EnhancedAIReviewPanel({
     diagramType: 'flowchart' | 'sequence' | 'both';
   } | null>(null);
   const [expandedMovedCodeIndices, setExpandedMovedCodeIndices] = useState<Set<number>>(new Set());
+
+  const filterIssues = (issues: AIReviewComment[]) => {
+    return issues.filter(issue => !filterPRChanges || (changedLines[issue.file]?.has(issue.line)));
+  };
 
   // Handle highlighted item from editor glyph margin clicks
   useEffect(() => {
@@ -353,13 +358,20 @@ export function EnhancedAIReviewPanel({
     }
   };
 
-  const tabs = [
-    { id: 'issues', label: 'Issues', icon: '⚠️', count: review.totalIssues },
-    { id: 'intents', label: 'Change Intent', icon: '🎯', count: review.changeIntents?.length || 0 },
-    { id: 'callstacks', label: 'Call Stacks', icon: '📊', count: review.callStacks?.length || 0 },
-    { id: 'impact', label: 'Impact', icon: '🔍', count: review.impactAnalysis ? 1 : 0 },
-    { id: 'semantic', label: 'Semantic', icon: '✨', count: (review.movedCode?.length || 0) + (review.refactorings?.length || 0) },
-  ];
+   const filteredIssuesCount = filterIssues([...review.criticalIssues, ...review.warnings, ...review.suggestions]).length;
+ 
+   const tabs = [
+     { 
+       id: 'issues', 
+       label: 'Issues', 
+       icon: '⚠️', 
+       count: filterPRChanges ? filteredIssuesCount : review.totalIssues 
+     },
+     { id: 'intents', label: 'Change Intent', icon: '🎯', count: review.changeIntents?.length || 0 },
+     { id: 'callstacks', label: 'Diagrams', icon: '📊', count: review.callStacks?.length || 0 },
+     { id: 'impact', label: 'Impact', icon: '🔍', count: review.impactAnalysis ? 1 : 0 },
+     { id: 'semantic', label: 'Semantic', icon: '✨', count: (review.movedCode?.length || 0) + (review.refactorings?.length || 0) },
+   ];
 
   return (
     <div className="h-full flex flex-col bg-light-surface dark:bg-dark-surface border-l border-light-border dark:border-dark-border">
@@ -480,6 +492,28 @@ export function EnhancedAIReviewPanel({
               </div>
             </div>
 
+            {/* Global Suggestions */}
+            {review.globalSuggestions && review.globalSuggestions.length > 0 && (
+              <div className="p-4 bg-light-surface-elevated dark:bg-dark-surface-elevated rounded-lg border border-light-border dark:border-dark-border">
+                <h4 className="text-sm font-semibold text-light-accent-primary dark:text-dark-accent-primary mb-3 flex items-center gap-2">
+                  <span className="w-5 h-5 rounded bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 flex items-center justify-center text-xs">
+                    💡
+                  </span>
+                  Global Architectural Suggestions
+                </h4>
+                <ul className="space-y-2">
+                  {review.globalSuggestions.map((suggestion, idx) => (
+                    <li key={idx} className="flex gap-2">
+                      <span className="text-light-accent-primary dark:text-dark-accent-primary font-bold">•</span>
+                      <div className="prose prose-sm dark:prose-invert max-w-none text-light-text-secondary dark:text-dark-text-secondary">
+                        {renderMarkdown(suggestion)}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Critical Issues */}
             {review.criticalIssues.length > 0 && (
               <div className="space-y-2">
@@ -487,7 +521,8 @@ export function EnhancedAIReviewPanel({
                   <span className="w-5 h-5 rounded bg-light-accent-error/10 dark:bg-dark-accent-error/10 flex items-center justify-center text-xs">
                     🚨
                   </span>
-                  Critical Issues ({review.criticalIssues.length})
+                  Critical Issues ({filterIssues(review.criticalIssues).length}
+                  {filterPRChanges && ` / ${review.criticalIssues.length}`})
                 </h4>
                 {review.criticalIssues
                   .filter(issue => !filterPRChanges || (changedLines[issue.file]?.has(issue.line)))
@@ -537,7 +572,8 @@ export function EnhancedAIReviewPanel({
                   <span className="w-5 h-5 rounded bg-light-accent-warning/10 dark:bg-dark-accent-warning/10 flex items-center justify-center text-xs">
                     ⚠️
                   </span>
-                  Warnings ({review.warnings.length})
+                  Warnings ({filterIssues(review.warnings).length}
+                  {filterPRChanges && ` / ${review.warnings.length}`})
                 </h4>
                 {review.warnings
                   .filter(issue => !filterPRChanges || (changedLines[issue.file]?.has(issue.line)))
@@ -591,7 +627,8 @@ export function EnhancedAIReviewPanel({
                   <span className="w-5 h-5 rounded bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 flex items-center justify-center text-xs">
                     💡
                   </span>
-                  Suggestions ({review.suggestions.length})
+                  Suggestions ({filterIssues(review.suggestions).length}
+                  {filterPRChanges && ` / ${review.suggestions.length}`})
                 </h4>
                 {review.suggestions
                   .filter(issue => !filterPRChanges || (changedLines[issue.file]?.has(issue.line)))

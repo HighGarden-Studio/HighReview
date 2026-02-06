@@ -53,6 +53,7 @@ export interface MergedReviewResult {
   totalIssues: number;
   chunkResults: ChunkReviewResult[];
   processingTimeMs: number;
+  globalSuggestions?: string[];
 }
 
 export class ChunkedReviewExecutor {
@@ -425,7 +426,80 @@ export class ChunkedReviewExecutor {
   "suggestions": []
 }`;
 
-    let instructions = `You are reviewing a subset of files from a larger pull request.
+    const prInfo = options?.prInfo;
+    const prContextSection = prInfo ? `
+## Project Context & PR Description:
+**Project**: ${prInfo.owner}/${prInfo.repo}
+**PR Title**: ${prInfo.title}
+**PR Description**:
+${prInfo.description || '(No description provided)'}
+
+**INSTRUCTION**: 
+1. **Analyze the Project Domain**: Based on the project name, PR title, description, and the code changes, infer the project's domain and its architectural role.
+2. **Adopt Domain Expert Persona**: Act as a **Senior Domain Expert** for this specific domain. Ensure the code aligns with domain-specific best practices.
+
+> **Important**: The future is now—any improvements or “future” recommendations must be addressed **immediately**.
+
+---
+
+## Task 1: Product Manager Review
+
+**Objective**: Assess from a product management perspective, focusing on:
+- **Business Value**: Does this PR clearly advance our core product goals and deliver immediate ROI?
+- **User Experience**: Is the change intuitive and delightful for users right now? If not, make fixes immediately.
+- **Strategic Alignment**: Does the PR align with current (and long-term, i.e., now) strategic objectives?
+
+**Action**: Provide clear directives on how to ensure maximum user and business impact. All “future” suggestions must be implemented now.
+
+---
+
+## Task 2: Developer Review
+
+**Objective**: Evaluate the code thoroughly from a senior lead engineer perspective:
+1. **Code Quality & Maintainability**: Is the code structured for readability and easy maintenance? If not, refactor now.
+2. **Performance & Scalability**: Will these changes operate efficiently at scale? If not, optimize immediately.
+3. **Best Practices & Standards**: Note any deviation from coding standards and correct it now.
+
+**Action**: Leave a concise yet complete review comment, ensuring all improvements happen immediately—no deferrals.
+
+---
+
+## Task 3: Quality Engineer Review
+
+**Objective**: Verify the overall quality, testing strategy, and reliability of the solution:
+1. **Test Coverage**: Are there sufficient tests (unit, integration, E2E)? If not, add them now.
+2. **Potential Bugs & Edge Cases**: Have all edge cases been considered? If not, address them immediately.
+3. **Regression Risk**: Confirm changes don’t undermine existing functionality. If risk is identified, mitigate now with additional checks or tests.
+
+**Action**: Provide a detailed QA assessment, insisting any “future” improvements be completed right away.
+
+---
+
+## Task 4: Security Engineer Review
+
+**Objective**: Ensure robust security practices and compliance:
+1. **Vulnerabilities**: Could these changes introduce security vulnerabilities? If so, fix them right away.
+2. **Data Handling**: Are we properly protecting sensitive data (e.g., encryption, sanitization)? Address all gaps now.
+3. **Compliance**: Confirm alignment with any relevant security or privacy standards (e.g., OWASP, GDPR, HIPAA). Implement missing requirements immediately.
+
+**Action**: Provide a security assessment. Any recommended fixes typically scheduled for “later” must be addressed now.
+
+---
+
+## Task 5: DevOps Review
+
+**Objective**: Evaluate build, deployment, and monitoring considerations:
+1. **CI/CD Pipeline**: Validate that the PR integrates smoothly with existing build/test/deploy processes. If not, fix it now.
+2. **Infrastructure & Configuration**: Check whether the code changes require immediate updates to infrastructure or configs.
+3. **Monitoring & Alerts**: Identify new monitoring needs or potential improvements and implement them immediately.
+
+**Action**: Provide a DevOps-centric review, insisting that any improvements or tweaks be executed now.
+
+` : '';
+
+    let instructions = `You are a **Senior Domain Expert** reviewing a subset of files from a larger pull request.
+
+${prContextSection}
 
 ## Files in this chunk (${chunk.chunkIndex + 1}/${chunk.totalChunks}):
 ${filesSummary}
@@ -447,7 +521,7 @@ ${diffsContent}
 Please review these files and provide:
 1. Critical issues (security, bugs, errors)
 2. Warnings (potential problems, performance issues)
-3. Suggestions (improvements, best practices)
+3. Suggestions (improvements, best practices, or alternative implementation methods using other patterns)
 `;
 
     const fileCount = chunk.files.length;
@@ -478,12 +552,11 @@ ${jsonStructure}
    - For unchanged lines (starting with space), count continuously.
    - Do NOT report issues on removed lines (starting with -).
 
-   - **CRITICAL**: Reported line numbers MUST exist in the code context provided.
-   - For added lines (starting with + in diff), count from the hunk header's NEW file start line.
-   - For unchanged lines (starting with space), count continuously.
-   - Do NOT report issues on removed lines (starting with -).
+4. **Severity Filtering**:
+   - **Classify issues into**: Critical, Warning, Suggestion, and Nitpick (Nit).
+   - **FILTER RULE**: **EXCLUDE** 'Nitpick' issues from the output. Only return Critical, Warning, and Suggestion.
    
-4. **General**:
+5. **General**:
    - Ensure the response is valid JSON.
    - Escape all strings properly.
 `;
@@ -1077,7 +1150,7 @@ ${jsonStructure}
         prompt,
         workingDirectory: process.cwd(),
         model: undefined, // Use default model
-        timeout: 60000, // 1 minute timeout for summarization
+        timeout: 300000, // 5 minute timeout for summarization (Stage 3 Reduce phase)
       });
 
       // Parse refined response
@@ -1088,6 +1161,7 @@ ${jsonStructure}
         return {
           ...mergedResult,
           summary: refined.summary || mergedResult.summary,
+          globalSuggestions: refined.globalSuggestions || mergedResult.globalSuggestions,
           changeIntent: refined.changeIntent || mergedResult.changeIntent,
           impactAnalysis: refined.impactAnalysis || mergedResult.impactAnalysis,
           callStacks: refined.callStacks || mergedResult.callStacks,
@@ -1122,14 +1196,24 @@ ${chunkSummaries}
 ## Your Task:
 Provide a comprehensive, high-level analysis of the entire PR. 
 
-1. **Overall Summary**: A concise 1-2 sentence overview of the PR's purpose.
-2. **Global Change Intent**: Explain WHY these changes were made and their overall architectural goal.
-3. **Impact Analysis**: Assess the PR-wide impact, including scope, affected areas, and risks.
-4. **Logic Flow Diagrams**: Generate Mermaid.js code to visualize the overall logic or data flow.
+1. **Overall Summary**: A concise overview of the PR's purpose and what it achieves.
+2. **Global Suggestions**: Based on the global context of all changes, provide a list of specific, high-level suggestions. This can include:
+   - Ways to improve the implemented code or design
+   - Alternative implementation methods using different architectural patterns
+   - Global refactoring opportunities that could improve the overall system design
+3. **Global Change Intent**: Explain WHY these changes were made and their overall architectural goal.
+4. **Impact Analysis**: Assess the PR-wide impact, including scope, affected areas, and risks.
+5. **Logic Flow Diagrams**: Generate Mermaid.js code to visualize the overall logic, data flow, or architectural structure.
+   - **Flowchart**: Use \`graph TD\` for logic/data flow.
+   - **Sequence Diagram**: Use \`sequenceDiagram\` for interactions.
+   - **Class Diagram**: Use \`classDiagram\` for class inheritance, interfaces, or relationships.
+   - **JSON Field Usage**: Place \`classDiagram\` or \`graph TD\` code in the \`flowchart\` field. Place \`sequenceDiagram\` in the \`sequence\` field.
+
 
 ## JSON Response Format:
 {
   "summary": "...",
+  "globalSuggestions": ["Suggestion 1", "Suggestion 2", "..."],
   "changeIntent": "...",
   "impactAnalysis": {
     "scope": "Module|Project|Dependencies",
@@ -1160,6 +1244,7 @@ Provide a comprehensive, high-level analysis of the entire PR.
    */
   private parseRefinedSummary(content: string): { 
     summary?: string; 
+    globalSuggestions?: string[];
     changeIntent?: string;
     impactAnalysis?: ImpactAnalysis;
     callStacks?: CallStackInfo[];
@@ -1185,6 +1270,7 @@ Provide a comprehensive, high-level analysis of the entire PR.
       
       return {
         summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
+        globalSuggestions: Array.isArray(parsed.globalSuggestions) ? parsed.globalSuggestions : undefined,
         changeIntent: typeof parsed.changeIntent === 'string' ? parsed.changeIntent : undefined,
         impactAnalysis: parsed.impactAnalysis && typeof parsed.impactAnalysis === 'object' 
           ? parsed.impactAnalysis as ImpactAnalysis 

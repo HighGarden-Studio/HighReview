@@ -433,28 +433,51 @@ function CodeEditorComponent({
     return () => {
       setIsEditorReady(false);
 
-      disposablesRef.current.forEach(d => d.dispose());
-      disposablesRef.current = [];
-
-      // Clean up zone widgets first
-      if (editorRef.current && prCommentZonesRef.current.size > 0) {
-        editorRef.current.changeViewZones((changeAccessor) => {
-          prCommentZonesRef.current.forEach(({ zoneId, widget }) => {
-            changeAccessor.removeZone(zoneId);
-            widget.dispose();
+      try {
+        // Dispose all added listeners and actions first
+        if (disposablesRef.current) {
+          disposablesRef.current.forEach(d => {
+            try {
+              d.dispose();
+            } catch (e) {
+              console.warn('[CodeEditor] Error disposing listener:', e);
+            }
           });
-        });
-        prCommentZonesRef.current.clear();
-      }
+          disposablesRef.current = [];
+        }
 
-      // Dispose editor
-      if (editorRef.current) {
-        editorRef.current.dispose();
-        editorRef.current = null;
-      }
-      // Only dispose model if it's not a shared model (no URI)
-      if (modelRef.current && !filePath && !repoRoot) {
-        modelRef.current.dispose();
+        // Clean up zone widgets before the editor is gone
+        if (editorRef.current && prCommentZonesRef.current.size > 0) {
+          try {
+            editorRef.current.changeViewZones((changeAccessor) => {
+              prCommentZonesRef.current.forEach(({ zoneId, widget }) => {
+                try {
+                  changeAccessor.removeZone(zoneId);
+                  widget.dispose();
+                } catch (e) {
+                  console.warn('[CodeEditor] Error disposing zone widget:', e);
+                }
+              });
+            });
+            prCommentZonesRef.current.clear();
+          } catch (e) {
+            console.warn('[CodeEditor] Error during changeViewZones cleanup:', e);
+          }
+        }
+
+        // Finally dispose the editor itself
+        if (editorRef.current) {
+          editorRef.current.dispose();
+          editorRef.current = null;
+        }
+
+        // Only dispose model if it's not a shared model (no URI)
+        if (modelRef.current && !modelRef.current.isDisposed() && !filePath && !repoRoot) {
+          modelRef.current.dispose();
+          modelRef.current = null;
+        }
+      } catch (error) {
+        console.error('[CodeEditor] Final cleanup failed:', error);
       }
     };
   }, [onAddComment, onShowReferences, onNavigateToLocation, onSearchInProject, filePath, repoRoot, worktreePath]);
@@ -604,6 +627,9 @@ function CodeEditorComponent({
     let lastNavigationTime = 0;
     let accumulatedDeltaY = 0;
     let lastWheelTime = 0;
+    let wasAtBottom = false;
+    let wasAtTop = false;
+
     const NAVIGATION_THROTTLE = 1000; // ms
     const ACCUMULATION_RESET_TIME = 200; // ms
     const TRIGGER_THRESHOLD = 200; // Total deltaY to trigger navigation
@@ -625,6 +651,10 @@ function CodeEditorComponent({
       lastWheelTime = now;
       accumulatedDeltaY += e.deltaY;
 
+      // Reset boundary flags if scrolling in opposite direction
+      if (e.deltaY < 0) wasAtBottom = false;
+      if (e.deltaY > 0) wasAtTop = false;
+
       if (now - lastNavigationTime < NAVIGATION_THROTTLE) return;
 
       const isAtBottom = scrollTop + viewportHeight >= scrollHeight - 5;
@@ -633,17 +663,33 @@ function CodeEditorComponent({
 
       // Check for overscroll at bottom (Next File)
       if (accumulatedDeltaY > TRIGGER_THRESHOLD && (isAtBottom || isShortFile)) {
+        if (!wasAtBottom) {
+          wasAtBottom = true;
+          accumulatedDeltaY = 0; // Require more scroll after reaching boundary
+          console.log('[CodeEditor] At bottom boundary, requiring second action for next file');
+          return;
+        }
+
         console.log('[CodeEditor] Navigating to next file:', { accumulatedDeltaY, isAtBottom, isShortFile });
         lastNavigationTime = now;
         accumulatedDeltaY = 0;
+        wasAtBottom = false;
         if (onNavigateNext) onNavigateNext();
       }
       
       // Check for overscroll at top (Prev File)
       if (accumulatedDeltaY < -TRIGGER_THRESHOLD && (isAtTop || isShortFile)) {
+        if (!wasAtTop) {
+          wasAtTop = true;
+          accumulatedDeltaY = 0; // Require more scroll after reaching boundary
+          console.log('[CodeEditor] At top boundary, requiring second action for previous file');
+          return;
+        }
+
         console.log('[CodeEditor] Navigating to previous file:', { accumulatedDeltaY, isAtTop, isShortFile });
         lastNavigationTime = now;
         accumulatedDeltaY = 0;
+        wasAtTop = false;
         if (onNavigatePrev) onNavigatePrev();
       }
     };

@@ -454,35 +454,56 @@ function DiffEditorComponent({
     return () => {
       setIsEditorReady(false);
 
-      disposablesRef.current.forEach(d => d.dispose());
-      disposablesRef.current = [];
-
-      // Clean up zone widgets first
-      if (diffEditorRef.current && prCommentZonesRef.current.size > 0) {
-        const modifiedEditor = diffEditorRef.current.getModifiedEditor();
-        if (modifiedEditor) {
-          modifiedEditor.changeViewZones((changeAccessor) => {
-            prCommentZonesRef.current.forEach(({ zoneId, widget }) => {
-              changeAccessor.removeZone(zoneId);
-              widget.dispose();
-            });
+      try {
+        // Dispose all added listeners and actions first
+        if (disposablesRef.current) {
+          disposablesRef.current.forEach(d => {
+            try {
+              d.dispose();
+            } catch (e) {
+              console.warn('[DiffEditor] Error disposing listener:', e);
+            }
           });
-          prCommentZonesRef.current.clear();
+          disposablesRef.current = [];
         }
-      }
 
-      // Dispose editor
-      if (diffEditorRef.current) {
-        diffEditorRef.current.dispose();
-        diffEditorRef.current = null;
-      }
-      // VSCode-integrated models are managed by the model reference system
-      // Only dispose standard models (created without filePath/repoRoot)
-      if (originalModelRef.current && !filePath && !repoRoot) {
-        originalModelRef.current.dispose();
-      }
-      if (modifiedModelRef.current && !filePath && !repoRoot) {
-        modifiedModelRef.current.dispose();
+        // Clean up zone widgets before the editor is gone
+        if (diffEditorRef.current) {
+          const modifiedEditor = diffEditorRef.current.getModifiedEditor();
+          if (modifiedEditor && prCommentZonesRef.current.size > 0) {
+            try {
+              modifiedEditor.changeViewZones((changeAccessor) => {
+                prCommentZonesRef.current.forEach(({ zoneId, widget }) => {
+                  try {
+                    changeAccessor.removeZone(zoneId);
+                    widget.dispose();
+                  } catch (e) {
+                    console.warn('[DiffEditor] Error disposing zone widget:', e);
+                  }
+                });
+              });
+              prCommentZonesRef.current.clear();
+            } catch (e) {
+              console.warn('[DiffEditor] Error during changeViewZones cleanup:', e);
+            }
+          }
+
+          // Finally dispose the editor itself
+          diffEditorRef.current.dispose();
+          diffEditorRef.current = null;
+        }
+
+        // Only dispose standard models (created without filePath/repoRoot)
+        if (originalModelRef.current && !originalModelRef.current.isDisposed() && !filePath && !repoRoot) {
+          originalModelRef.current.dispose();
+          originalModelRef.current = null;
+        }
+        if (modifiedModelRef.current && !modifiedModelRef.current.isDisposed() && !filePath && !repoRoot) {
+          modifiedModelRef.current.dispose();
+          modifiedModelRef.current = null;
+        }
+      } catch (error) {
+        console.error('[DiffEditor] Final cleanup failed:', error);
       }
     };
   }, [onAddComment, onShowReferences, onNavigateToLocation, onSearchInProject, filePath, repoRoot, worktreePath]);
@@ -682,6 +703,9 @@ function DiffEditorComponent({
     let lastNavigationTime = 0;
     let accumulatedDeltaY = 0;
     let lastWheelTime = 0;
+    let wasAtBottom = false;
+    let wasAtTop = false;
+
     const NAVIGATION_THROTTLE = 1000; // ms
     const ACCUMULATION_RESET_TIME = 200; // ms
     const TRIGGER_THRESHOLD = 200; // Total deltaY to trigger navigation
@@ -706,10 +730,9 @@ function DiffEditorComponent({
       lastWheelTime = now;
       accumulatedDeltaY += e.deltaY;
 
-      // Debug log (throttled)
-      if (now % 10 === 0) {
-        // console.log('[DiffEditor] wheel:', { deltaY: e.deltaY, accumulated: accumulatedDeltaY, scrollTop, scrollHeight, viewportHeight });
-      }
+      // Reset boundary flags if scrolling in opposite direction
+      if (e.deltaY < 0) wasAtBottom = false;
+      if (e.deltaY > 0) wasAtTop = false;
 
       if (now - lastNavigationTime < NAVIGATION_THROTTLE) return;
 
@@ -719,17 +742,33 @@ function DiffEditorComponent({
 
       // Check for overscroll at bottom (Next File)
       if (accumulatedDeltaY > TRIGGER_THRESHOLD && (isAtBottom || isShortFile)) {
+        if (!wasAtBottom) {
+          wasAtBottom = true;
+          accumulatedDeltaY = 0; // Require more scroll after reaching boundary
+          console.log('[DiffEditor] At bottom boundary, requiring second action for next file');
+          return;
+        }
+
         console.log('[DiffEditor] Navigating to next file:', { accumulatedDeltaY, isAtBottom, isShortFile });
         lastNavigationTime = now;
         accumulatedDeltaY = 0;
+        wasAtBottom = false;
         if (onNavigateNext) onNavigateNext();
       }
       
       // Check for overscroll at top (Prev File)
       if (accumulatedDeltaY < -TRIGGER_THRESHOLD && (isAtTop || isShortFile)) {
+        if (!wasAtTop) {
+          wasAtTop = true;
+          accumulatedDeltaY = 0; // Require more scroll after reaching boundary
+          console.log('[DiffEditor] At top boundary, requiring second action for previous file');
+          return;
+        }
+
         console.log('[DiffEditor] Navigating to previous file:', { accumulatedDeltaY, isAtTop, isShortFile });
         lastNavigationTime = now;
         accumulatedDeltaY = 0;
+        wasAtTop = false;
         if (onNavigatePrev) onNavigatePrev();
       }
     };

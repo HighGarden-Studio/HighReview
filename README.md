@@ -1,165 +1,108 @@
 # HighReview
 
-> 🚀 AI-Powered Local PR Review Tool with GitHub-Style Interface
+> 🚀 **AI-Native Local review tool** with GitHub-Style Interface
 
-HighReview는 로컬 환경을 방해하지 않으면서 GitHub Pull Request를 강력하게 리뷰할 수 있는 도구입니다. Git Worktree를 활용하여 현재 작업 디렉토리를 건드리지 않고, IDE 수준의 코드 분석과 AI 인사이트를 제공합니다.
+HighReview는 로컬 환경을 방해하지 않으면서 GitHub Pull Request를 강력하게 리뷰할 수 있는 도구입니다. Git Worktree를 활용하여 현재 작업 디렉토리를 건드리지 않고, **Offline-First 코드 분석**과 **Local AI**를 통해 안전하고 강력한 리뷰 환경을 제공합니다.
+
+> 🔒 **로그인 불필요**: HighReview는 사용자의 로컬 `gh` 클라이언트와 AI 에이전트를 직접 활용하므로, 별도의 회원가입이나 인증 절차 없이 즉시 사용할 수 있습니다.
 
 HighReview is a powerful local PR review tool that doesn't disrupt your working environment. Using Git Worktree, it provides IDE-level code analysis and AI insights without touching your current working directory.
 
+> 🔒 **No Login or Authentication Required**: HighReview operates entirely locally using your existing `gh` client and local AI agents. No separate account or sign-up is needed.
+
 **[View on GitHub](https://github.com/HighGarden-Studio/HighReview)** | **[Report Bug](https://github.com/HighGarden-Studio/HighReview/issues)** | **[Request Feature](https://github.com/HighGarden-Studio/HighReview/issues/new)**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org)
 [![GitHub Stars](https://img.shields.io/github/stars/HighGarden-Studio/HighReview?style=social)](https://github.com/HighGarden-Studio/HighReview)
-[![GitHub Issues](https://img.shields.io/github/issues/HighGarden-Studio/HighReview)](https://github.com/HighGarden-Studio/HighReview/issues)
+
+![HighReview PullRequest Review Page](/assets/images/review_main.png)
+![HighReview PullRequest List Page](/assets/images/prs.png)
+![HighReview PullRequest List Page - Dark](/assets/images/prs_dark.png)
 
 ## ✨ Features
 
-### 🎯 Core Features
+### 🚀 Zero Distraction Review
 
-- **Zero Distraction Review**: Uses Git Worktree to create isolated review environments
-- **GitHub-Style Interface**: Familiar 4-panel layout (File Tree | Before | After | Info Panel)
-- **AI-Powered Analysis**: Comprehensive code review with AI suggestions
-- **Real-time Chat Assistant**: Ask questions about code with context awareness
-- **Code Navigation**: Go to Definition, Find Usages, and more via Tree-sitter integration
-- **Inline Comments**: GitHub-style comment system with Markdown support
-- **Call Stack Visualization**: Mermaid flowcharts and sequence diagrams
+- **Git Worktree Integration**: Creates isolated review environments instantly.
+- **Background Indexing**: Pre-indexes symbols for instant code navigation.
+- **IDE-Like Experience**: Go to Definition, Find Usages, and Symbol Search (TypeScript, Ruby, Java).
 
-### 🤖 AI Review Features
+### 🤖 Universal AI Provider
 
-- **Automatic Issue Detection**: Critical issues, warnings, and suggestions
-- **Change Intent Analysis**: Understand why changes were made
-- **Impact Analysis**: Assess scope and breaking changes
-- **Semantic Search**: Find code by meaning, not just keywords
-- **Multi-Provider Support**: Claude Code, Ollama, LM Studio
+Plug-and-play AI support. No API keys required for local models.
 
-### 💬 Interactive Features
+- **Supported Providers**:
+  - **Claude Code CLI** (Recommended, Anthropic)
+  - **Ollama** (Local Llama 3, Mistral, etc.)
+  - **LM Studio** (Local, OpenAI Compatible)
+- **Automatic Detection**: Automatically detects installed providers.
+- **Zero Configuration**: Select your provider in the UI Settings.
 
-- **File References**: `@file:path:line` syntax to reference code
-- **Issue References**: `@issue:ID`, `@change:ID`, `@impact:ID`
-- **Markdown WYSIWYG Editor**: Rich text editing for comments
-- **Streaming Responses**: Real-time typing effect for AI replies
-- **Dark/Light Theme**: Automatic theme switching
+### 💬 AI Assistant (Context-Aware Chat)
 
-## 📸 Screenshots
+Ask questions about your code with full context awareness.
 
-> **Note**: Add screenshots here when available
+- **Smart Context**: Automatically includes selected code, file contents, and PR details.
+- **Deep Analysis**: "Explain this function", "Find bugs in this selection", "Generate tests".
+- **Multi-Modal**: Supports file attachments and reference links.
+
+### 📊 Comprehensive Code Analysis
+
+- **Automatic Issue Detection**: Critical bugs, warnings, and optimization suggestions.
+- **Change Intent Analysis**: Understand _why_ code was changed.
+- **Impact Analysis**: See potential side effects and breaking changes.
+- **Visual Call Stacks**: Interactive Mermaid flowcharts and sequence diagrams.
 
 ## 🏗️ Architecture
 
 ```
 HighReview/
 ├── apps/
-│   ├── cli/          # Node.js backend server
-│   │   ├── src/
-│   │   │   ├── routes/       # API routes
-│   │   │   ├── services/     # Business logic
-│   │   │   │   ├── providers/  # AI providers (Claude, Ollama, LM Studio)
-│   │   │   │   └── ...
-│   │   │   └── index.ts      # Server entry point
-│   │   └── package.json
-│   └── web/          # React frontend
-│       ├── src/
-│       │   ├── components/   # UI components
-│       │   ├── contexts/     # React contexts
-│       │   ├── hooks/        # Custom hooks
-│       │   ├── pages/        # Page components
-│       │   └── utils/        # Utility functions
-│       └── package.json
-└── package.json      # Root workspace config
+│   ├── cli/          # Node.js Backend (Fastify + SQLite + Tree-sitter)
+│   └── web/          # React Frontend (Vite + Monaco + React Query)
+└── .highreview/      # Global Config & Storage
 ```
 
 ### AI Review Pipeline
 
 ```mermaid
 flowchart TD
-    %% Nodes
-    Start(["User Initiates Review"])
+    Start(["Start Review"]) --> Diff["Git Diff"]
+    Diff --> TreeSitter["ContextAnalyzer"]
+    TreeSitter --> |Offline Indexing| Index["Symbol Database"]
 
-    subgraph Stage1 ["Stage 1: Context Optimization"]
-        Diff["Get Git Diff"]
-        TreeSitter["ContextAnalyzer<br/>(Tree-sitter)"]
-        OptContext["Optimized Context<br/>(Signatures & Docstrings)"]
+    Index --> AI_Prov["AI Provider\n(Claude/Ollama/LM)"]
+    AI_Prov --> |Stream| Client["Web UI"]
 
-        Diff --> TreeSitter
-        TreeSitter --> |Extract| OptContext
+    subgraph Analysis
+        Intent["Change Intent"]
+        Issues["Code Issues"]
+        Impact["Impact Analysis"]
     end
 
-    subgraph Stage2 ["Stage 2: Map Phase (Batch Processing)"]
-        Chunking["ChunkingStrategy<br/>(Split Files)"]
-
-        Batch1["Batch 1 Review<br/>(Code Reviewer Persona)"]
-        Batch2["Batch 2 Review<br/>(Code Reviewer Persona)"]
-        BatchN["Batch N Review<br/>(Code Reviewer Persona)"]
-
-        OptContext --> Chunking
-        Chunking --> Batch1
-        Chunking --> Batch2
-        Chunking --> BatchN
-    end
-
-    subgraph Stage3 ["Stage 3: Reduce Phase (Global Analysis)"]
-        Collect["Collect & Merge Results"]
-        Architect["PR Architect AI<br/>(RefineSummaryWithAI)"]
-
-        Output1["Global Change Intent"]
-        Output2["Impact Analysis"]
-        Output3["Logic Flow Diagrams<br/>(Mermaid)"]
-    end
-
-    %% Edge Connections
-    Start --> Diff
-
-    Batch1 --> |Issues + 1-Line Summary| Collect
-    Batch2 --> |Issues + 1-Line Summary| Collect
-    BatchN --> |Issues + 1-Line Summary| Collect
-
-    Collect --> |All Summaries| Architect
-
-    Architect --> Output1
-    Architect --> Output2
-    Architect --> Output3
-
-    Output1 --> Final(["Final Review Report"])
-    Output2 --> Final
-    Output3 --> Final
-
-    %% Styling
-    classDef stage fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef process fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
-    classDef ai fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,rx:10,ry:10;
-
-    class Stage1,Stage2,Stage3 stage;
-    class TreeSitter,Chunking,Collect process;
-    class Batch1,Batch2,BatchN,Architect ai;
+    AI_Prov --> Intent
+    AI_Prov --> Issues
+    AI_Prov --> Impact
 ```
 
-### Tech Stack
+## 🛠 Tech Stack
 
 **Backend (CLI)**
 
-- Node.js 18+
-- Fastify (Web Server)
-- TypeScript
-- GitHub CLI (`gh`)
-- SQLite (Data persistence)
+- **Runtime**: Node.js 18+
+- **Framework**: Fastify
+- **Database**: SQLite (`better-sqlite3`) for robust local storage.
+- **Analysis**: Tree-sitter (Java, TS, Ruby, Python, Kotlin) for precise code parsing.
+- **AI Integration**: Custom Provider Architecture (Claude, Ollama, LM Studio).
 
 **Frontend (Web)**
 
-- React 18
-- TypeScript
-- Vite
-- Monaco Editor (Code editor)
-- Allotment (Resizable panels)
-- React Query (Data fetching)
-- Mermaid (Diagrams)
-- Lucide React (Icons)
-
-**AI Providers**
-
-- Claude Code CLI
-- Ollama
-- LM Studio
+- **Framework**: React 18, Vite
+- **Editor**: Monaco Editor (VS Code core)
+- **State**: React Query, Zustand
+- **UI**: Allotment (Splits), TailwindCSS, Radix UI
+- **Visualization**: Mermaid.js for flows and charts.
 
 ## 🚀 Getting Started
 
@@ -167,11 +110,10 @@ flowchart TD
 
 - **Node.js**: >= 18.0.0
 - **Git**: >= 2.30.0
-- **GitHub CLI**: Install from https://cli.github.com
-- **AI Provider** (Choose one):
-  - Claude Code CLI: https://claude.ai/download
-  - Ollama: https://ollama.ai
-  - LM Studio: https://lmstudio.ai
+- **GitHub CLI**: `gh auth login` required for PR fetching.
+- **AI Provider** (Optional but Recommended):
+  - [Claude Code](https://claude.ai/download)
+  - [Ollama](https://ollama.ai)
 
 ### Installation
 
@@ -188,265 +130,60 @@ flowchart TD
    npm install
    ```
 
-3. **Authenticate with GitHub**
+3. **Start Development Server**
 
    ```bash
-   gh auth login
+   # Starts both CLI (port 8765) and Web (port 5273)
+   npm run dev
    ```
 
-   HighReview uses GitHub CLI for authentication - no token configuration needed!
+4. **Open in Browser**
+   - Go to `http://localhost:5273`
+   - **Settings Setup**: Navigate to the Settings page to select your AI Provider.
 
-4. **Install AI Provider** (Choose one)
-   - **Claude Code CLI** (Recommended): https://claude.ai/download
-   - **Ollama**: https://ollama.ai
-   - **LM Studio**: https://lmstudio.ai
-
-   You can select your AI provider in the Settings page after starting the app.
-
-### Usage
-
-#### Development Mode
-
-```bash
-# Start both backend and frontend in dev mode
-npm run dev
-
-# Or start them separately
-npm run dev:cli    # Backend only (port 8765)
-npm run dev:web    # Frontend only (port 5173)
-```
-
-Then open http://localhost:5173 in your browser.
-
-#### Production Build
-
-```bash
-# Build both apps
-npm run build
-
-# Start production server
-npm start
-```
-
-The production server will serve the built frontend and API on port 8765.
+![Settings Page](/assets/images/settings_ai_provider.png)
 
 ## 📖 Usage Guide
 
 ### 1. Select a Pull Request
 
-1. Navigate to the home page
-2. View your review-requested PRs or browse involved PRs
-3. Click on a PR to start reviewing
+Review-requested PRs are automatically loaded. Click any card to start a workspace-isolated review.
 
-### 2. Review Interface
+![Pull Request List](/assets/images/prs.png)
+![Pull Request Detail](/assets/images/pr_detail.png)
 
-The review screen has 4 main panels:
+#### 2. AI Review Options
 
-- **File Tree**: Shows all changed files
-- **Diff View**: Side-by-side comparison (Before | After)
-- **AI Review Panel**: AI-generated insights and suggestions
-- **Chat Panel**: Interactive Q&A with AI
+When re-running a review, you can customize the analysis depth:
 
-### 3. Add Comments
+- **🧠 Context-Aware Review**: Uses Tree-sitter to find callers and implementations of modified code in the project.
+- **🎯 Change Intent Analysis**: Determines _why_ code was changed (File-level or Block-level).
+- **📊 Code Visualization**: Generates Mermaid Flowcharts or Sequence Diagrams or Class Diagrams for modified functions.
+- **🔍 Impact Analysis**: Assesses broader impact (Module, Project, or Dependencies).
+- **✨ Semantic Diff**: Detects moved code, refactoring patterns, and ignores whitespace/comments.
+- **💬 Custom Prompt**: Add your own specific instructions for the AI reviewer.
 
-#### Inline Comments
+![AI Code Review Options](/assets/images/pr_ai_code_review_options.png)
 
-1. Click on any line in the code editor
-2. Write your comment using Markdown
-3. Choose "Add single comment" or "Add to review"
+### 3. Review with AI
 
-#### Review Summary
+- **Auto-Review**: The AI analyzes the PR on load. Click "Re-run" to trigger a fresh analysis with custom options.
+- **Ask Assistant**: Highlight any code in the specialized "Diff Editor" or "File Tree" and ask questions in the side panel.
 
-1. Click "Submit Review" button
-2. Choose review type: Comment / Approve / Request Changes
-3. Write optional summary
-4. Submit
+![Code Visualization](/assets/images/review_main.png)
+![Code Visualization](/assets/images/review_diagram.png)
+![AI Assistant Panel](/assets/images/review_ai_assistant_1.png)
+![AI Assistant Panel](/assets/images/review_ai_assistant_2.png)
 
-### 4. AI Features
+### 4. Navigate Code
 
-#### Ask AI
-
-- Select code and type your question
-- Use file references: `@file:path.ts:42`
-- Reference issues: `@issue:0`, `@change:1`
-
-#### AI Review
-
-- Automatically runs on PR load
-- Click "Re-run" to refresh analysis
-- View issues, change intents, and impact analysis
-
-#### Call Stack Visualization
-
-- Click on function names to see call stacks
-- View flowcharts and sequence diagrams
-- Navigate to referenced files
-
-## 🎨 Customization
-
-### AI Provider Configuration
-
-AI providers are automatically detected and can be selected in the Settings page:
-
-1. Navigate to Settings (gear icon)
-2. Select your installed AI provider:
-   - **Claude Code CLI** (recommended)
-   - **Ollama** (local inference)
-   - **LM Studio** (local inference)
-3. The selection is automatically saved to `~/.highreview/config.json`
-
-No environment variables needed - the app detects available providers automatically!
-
-### Theme
-
-Toggle theme in the top-right corner or press `Cmd/Ctrl + Shift + T`.
-
-### Keyboard Shortcuts
-
-| Action         | Shortcut           |
-| -------------- | ------------------ |
-| Toggle AI Chat | `Cmd/Ctrl + /`     |
-| Next File      | `j`                |
-| Previous File  | `k`                |
-| Add Comment    | `c`                |
-| Submit Review  | `Cmd/Ctrl + Enter` |
-| Focus Search   | `f`                |
-| Show Shortcuts | `?`                |
-
-## 🔧 Configuration
-
-### Environment Variables
-
-All configuration is optional. The app works out of the box with GitHub CLI authentication.
-
-| Variable                 | Description             | Default                          |
-| ------------------------ | ----------------------- | -------------------------------- |
-| `PORT`                   | Server port             | `8765`                           |
-| `HIGHREVIEW_BASE_DIR`    | Data storage directory  | `./.highreview-prs` (local mode) |
-| `HIGHREVIEW_GLOBAL_MODE` | Use global storage mode | `false`                          |
-| `NODE_ENV`               | Environment mode        | `development`                    |
-
-**Storage Modes:**
-
-- **Local Mode (Default)**: Stores PR clones in `./.highreview-prs/` within your current working directory
-  - ✅ Best for npx usage and Claude Code integration
-  - ✅ Workspace-isolated: Each directory has its own PR cache
-  - ✅ Easy cleanup: Delete directory to remove all PR data
-- **Global Mode**: Set `HIGHREVIEW_GLOBAL_MODE=true` to use `~/.highreview/`
-  - Use for reviewing PRs from multiple workspaces
-  - Shared cache across all projects
-
-**Note:**
-
-- No `GITHUB_TOKEN` needed - uses GitHub CLI (`gh`) authentication
-- No `AI_PROVIDER` needed - select in Settings UI
-
-### Data Storage
-
-**Local Mode (Default):**
-
-```
-your-workspace/
-└── .highreview-prs/          # PR review workspace (add to .gitignore)
-    ├── repos/
-    │   └── owner-repo/       # Bare repository (shared)
-    └── worktrees/
-        └── owner-repo/
-            ├── pr-123/       # PR #123 worktree
-            └── pr-456/       # PR #456 worktree
-```
-
-**Global Mode:**
-
-```
-~/.highreview/                # Global PR review workspace
-
-```
-
-~/.highreview/
-├── config.json # User configuration
-├── highreview.db # SQLite database
-├── worktrees/ # Git worktrees for PRs
-│ ├── owner-repo-123/
-│ └── ...
-└── cache/ # AI response cache
-
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-### Development Setup
-
-1. Fork the repository at [HighGarden-Studio/HighReview](https://github.com/HighGarden-Studio/HighReview)
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request to [HighGarden-Studio/HighReview](https://github.com/HighGarden-Studio/HighReview/pulls)
-
-### Code Style
-
-- TypeScript with strict mode
-- ESLint + Prettier
-- Functional components with hooks
-- React Query for data fetching
-
-## 📝 Roadmap
-
-### v0.2.0 (Next Release)
-
-**AI Review Cache & Version Control**
-- [ ] Commit revision-based cache validation
-- [ ] Display outdated cache indicator with re-run prompt
-- [ ] Automatic latest version check for PR updates
-
-**Automated Review Scheduling**
-- [ ] Cron-based automatic pre-review system
-- [ ] Multiple cron schedule support (e.g., 9:30 AM daily)
-- [ ] Configurable review triggers and notifications
-
-**Multi-Repository Support**
-- [ ] Add multiple repositories to PR review list
-- [ ] Repository/Project information management page
-- [ ] Cross-repository review workflow
-
-**AI Provider Extensions**
-- [ ] LM Studio provider integration
-- [ ] Ollama provider integration
-- [ ] Available model synchronization on provider connection test
-- [ ] Model selection UI for each provider
-
-## 🐛 Known Issues
-
-- Mermaid diagrams may not render on first load (refresh to fix)
-- Large PRs (100+ files) may be slow to load
+- **Go to Definition**: Right-click on symbols (even in Ruby/Java) to jump to their definition.
+- **Find Usages**: See where functions or classes are used across the PR.
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Monaco Editor](https://microsoft.github.io/monaco-editor/) - Code editor
-- [Mermaid](https://mermaid.js.org/) - Diagram rendering
-- [Claude AI](https://claude.ai/) - AI assistance
-- [GitHub CLI](https://cli.github.com/) - GitHub integration
-- [React](https://react.dev/) - UI framework
-
-## 📧 Contact
-
-- GitHub Issues: [Report a bug](https://github.com/HighGarden-Studio/HighReview/issues)
-- Discussions: [Join the conversation](https://github.com/HighGarden-Studio/HighReview/discussions)
-
-## 📚 Additional Documentation
-
-- [AI Integration Guide](AI_INTEGRATION_COMPLETE.md)
-- [AI Provider Architecture](AI_PROVIDER_ARCHITECTURE.md)
-- [Code Navigation Guide](CODE_NAVIGATION_GUIDE.md)
-- [Implementation Status](IMPLEMENTATION_STATUS.md)
+This project is licensed under the **Apache License 2.0** - see the [LICENSE](LICENSE) file for details.
 
 ---
 
 Made with ❤️ by [HighGarden Studio](https://github.com/HighGarden-Studio)
-```

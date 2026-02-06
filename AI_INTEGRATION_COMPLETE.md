@@ -11,6 +11,7 @@
 **확장 가능한 Provider 패턴 구현:**
 
 #### 백엔드 (apps/cli/src/services/providers/)
+
 - [AIProvider.ts](apps/cli/src/services/providers/AIProvider.ts) - Base interface & factory
 - [ClaudeCodeProvider.ts](apps/cli/src/services/providers/ClaudeCodeProvider.ts) - Claude Code CLI 구현 ✅
 - [OllamaProvider.ts](apps/cli/src/services/providers/OllamaProvider.ts) - Ollama 스켈레톤
@@ -18,6 +19,7 @@
 - [index.ts](apps/cli/src/services/providers/index.ts) - Provider registry
 
 **현재 지원 Provider:**
+
 - ✅ **Claude Code** (구현 완료) - API 키 불필요
 - ⏳ **Ollama** (준비됨) - 로컬 모델
 - ⏳ **LM Studio** (준비됨) - OpenAI-compatible
@@ -27,12 +29,14 @@
 ### 2. AI 설정 관리 ✅
 
 #### AIConfigService
+
 - [AIConfigService.ts](apps/cli/src/services/AIConfigService.ts)
 - Provider 선택 저장/로드
 - 설정 파일: `~/.highreview/ai-config.json`
 - 자동 감지 및 fallback
 
 #### API 엔드포인트
+
 ```bash
 GET  /api/ai/providers     # 사용 가능한 provider 목록
 GET  /api/ai/config        # 현재 설정 조회
@@ -48,6 +52,7 @@ POST /api/ai/config        # Provider 변경
 - 자동 설정 저장
 
 **작동 방식:**
+
 1. 설정된 provider 로드
 2. Provider 사용 가능 여부 확인
 3. 사용 불가 시 자동으로 사용 가능한 provider 찾기
@@ -58,6 +63,7 @@ POST /api/ai/config        # Provider 변경
 ### 4. AI Assistant 시스템 ✅ (신규)
 
 #### 백엔드
+
 - [AIAssistantService.ts](apps/cli/src/services/AIAssistantService.ts)
 - 대화형 AI 채팅
 - 컨텍스트 포함 질의:
@@ -68,12 +74,14 @@ POST /api/ai/config        # Provider 변경
   - 대화 히스토리
 
 #### API 엔드포인트
+
 ```bash
 POST /api/ai/ask           # AI에게 질문
 POST /api/ai/read-files    # 파일 읽기 (컨텍스트용)
 ```
 
 **지원 컨텍스트:**
+
 ```typescript
 {
   // 선택된 코드
@@ -109,6 +117,7 @@ POST /api/ai/read-files    # 파일 읽기 (컨텍스트용)
 ### 5. Frontend 컴포넌트 ✅
 
 #### AI Provider 선택 UI
+
 - [AIProviderSelector.tsx](apps/web/src/components/AIProviderSelector.tsx)
 - 설치된 provider 자동 감지
 - 설치 안내 메시지 표시
@@ -117,6 +126,7 @@ POST /api/ai/read-files    # 파일 읽기 (컨텍스트용)
 - Full 카드 모드 (설정 페이지용)
 
 **기능:**
+
 - 사용 가능한 provider 목록 표시
 - 설치 상태 (Installed / Not Installed)
 - Provider 선택 및 저장
@@ -124,6 +134,7 @@ POST /api/ai/read-files    # 파일 읽기 (컨텍스트용)
 - 실시간 새로고침
 
 #### AI Assistant 채팅 UI
+
 - [AIAssistantPanel.tsx](apps/web/src/components/AIAssistantPanel.tsx)
 - 채팅 인터페이스
 - Markdown 렌더링
@@ -132,6 +143,7 @@ POST /api/ai/read-files    # 파일 읽기 (컨텍스트용)
 - 대화 히스토리 관리
 
 **기능:**
+
 - 질문 입력 (Enter 전송, Shift+Enter 줄바꿈)
 - AI 응답 실시간 표시
 - 마크다운 지원
@@ -141,6 +153,7 @@ POST /api/ai/read-files    # 파일 읽기 (컨텍스트용)
 - 컨텍스트 제거
 
 #### 설정 페이지
+
 - [SettingsPage.tsx](apps/web/src/pages/SettingsPage.tsx)
 - AI Provider 선택 UI 통합
 - 테마 설정
@@ -209,6 +222,7 @@ AIAssistantService.ask()
 ### 1단계: Provider 설치
 
 #### Claude Code (권장)
+
 ```bash
 # 다운로드 및 설치
 # https://claude.ai/download
@@ -221,6 +235,7 @@ claude code --help
 ```
 
 #### Ollama (선택)
+
 ```bash
 # 설치
 curl -fsSL https://ollama.ai/install.sh | sh
@@ -233,6 +248,7 @@ ollama list
 ```
 
 #### LM Studio (선택)
+
 ```bash
 # 다운로드
 # https://lmstudio.ai
@@ -243,7 +259,8 @@ ollama list
 ### 2단계: Provider 선택
 
 브라우저에서:
-1. http://localhost:5173/settings 방문
+
+1. http://localhost:5273/settings 방문
 2. AI Provider 섹션에서 provider 선택
 3. 설치되지 않은 경우 설치 안내 표시됨
 4. 설치 후 새로고침하여 상태 확인
@@ -252,12 +269,14 @@ ollama list
 ### 3단계: AI 기능 사용
 
 #### AI Review
+
 1. PR 상세 페이지에서 "Start Review" 클릭
 2. AI Review 옵션 선택
 3. 자동으로 설정된 provider 사용
 4. 리뷰 결과 확인
 
 #### AI Assistant (향후 통합)
+
 1. 코드 에디터에서 코드 선택
 2. AI Assistant 패널 열기
 3. 질문 입력 또는 "이 코드 설명해줘" 등
@@ -266,11 +285,13 @@ ollama list
 ## 🔧 API 사용 예시
 
 ### Provider 목록 조회
+
 ```bash
 curl http://localhost:8765/api/ai/providers
 ```
 
 **응답:**
+
 ```json
 {
   "providers": {
@@ -295,6 +316,7 @@ curl http://localhost:8765/api/ai/providers
 ```
 
 ### Provider 변경
+
 ```bash
 curl -X POST http://localhost:8765/api/ai/config \
   -H "Content-Type: application/json" \
@@ -302,6 +324,7 @@ curl -X POST http://localhost:8765/api/ai/config \
 ```
 
 ### AI Assistant 사용
+
 ```bash
 curl -X POST http://localhost:8765/api/ai/ask \
   -H "Content-Type: application/json" \
@@ -349,6 +372,7 @@ apps/
 ## 🎨 UI 스크린샷 설명
 
 ### 설정 페이지 (/settings)
+
 - **AI Provider 섹션**
   - 카드 형식으로 provider 표시
   - 설치 상태 (🟢 Installed / 🔴 Not Installed)
@@ -357,6 +381,7 @@ apps/
   - 상태 표시: "X of Y providers available"
 
 ### AI Assistant 패널
+
 - **헤더**
   - 제목: "AI Assistant"
   - "Clear Chat" 버튼
@@ -375,6 +400,7 @@ apps/
 ## 🔍 디버깅
 
 ### 서버 로그
+
 ```
 [AI Review] Registered providers: [ 'claude-code', 'ollama', 'lmstudio' ]
 [AI Review] Configured provider: claude-code
@@ -385,6 +411,7 @@ apps/
 ```
 
 ### 브라우저 콘솔
+
 ```javascript
 [AIProviderSelector] Loaded providers: { providers: {...}, selected: 'claude-code' }
 [AI Assistant] Sending message: { message: '...', hasContext: true }
@@ -392,6 +419,7 @@ apps/
 ```
 
 ### 설정 파일 확인
+
 ```bash
 cat ~/.highreview/ai-config.json
 ```
@@ -406,16 +434,19 @@ cat ~/.highreview/ai-config.json
 ## 🚀 성능 특성
 
 ### AI Review (Claude Code)
+
 - **소규모 PR** (< 500 lines): 20-40초
 - **중규모 PR** (500-2000 lines): 40-90초
 - **대규모 PR** (2000+ lines): 90-180초
 
 ### AI Assistant (대화)
+
 - **단순 질문**: 5-15초
 - **코드 분석**: 15-30초
 - **복잡한 질의** (많은 컨텍스트): 30-60초
 
 ### 메모리 사용
+
 - **Provider 초기화**: ~10MB
 - **AI Review 실행**: ~50MB (프롬프트 + 응답)
 - **AI Assistant**: ~20MB (세션당)
@@ -423,6 +454,7 @@ cat ~/.highreview/ai-config.json
 ## 🎓 향후 개선 계획
 
 ### 즉시 가능 (1-2주)
+
 - [ ] ReviewPage에 AI Assistant 패널 통합
 - [ ] 코드 선택하여 AI에게 질문하는 컨텍스트 메뉴
 - [ ] 파일 다중 선택 및 첨부
@@ -431,6 +463,7 @@ cat ~/.highreview/ai-config.json
 - [ ] LM Studio provider 완전 구현
 
 ### 단기 (1개월)
+
 - [ ] Codex CLI provider
 - [ ] Gemini CLI provider
 - [ ] AI Assistant 스트리밍 응답 (SSE)
@@ -439,6 +472,7 @@ cat ~/.highreview/ai-config.json
 - [ ] Provider별 모델 선택 (Sonnet/Opus/Haiku)
 
 ### 중기 (3개월)
+
 - [ ] 커스텀 프롬프트 템플릿
 - [ ] AI 응답 캐싱
 - [ ] 멀티모달 지원 (이미지 분석)
@@ -474,6 +508,7 @@ cat ~/.highreview/ai-config.json
 ## ✨ 주요 성과
 
 ### 기술적 성과
+
 1. ✅ 확장 가능한 Provider 아키텍처
 2. ✅ API 키 불필요한 로컬 우선 접근
 3. ✅ 통일된 AI 인터페이스
@@ -484,6 +519,7 @@ cat ~/.highreview/ai-config.json
 8. ✅ 실시간 상태 업데이트
 
 ### 사용자 경험
+
 1. ✅ 설치 후 즉시 사용 가능
 2. ✅ 직관적인 Provider 선택 UI
 3. ✅ 설치 안내 자동 표시
@@ -495,6 +531,7 @@ cat ~/.highreview/ai-config.json
 ## 📝 최종 체크리스트
 
 ### 백엔드
+
 - [x] AI Provider 인터페이스 설계
 - [x] ClaudeCodeProvider 구현
 - [x] AIConfigService 구현
@@ -506,6 +543,7 @@ cat ~/.highreview/ai-config.json
 - [x] 설정 저장/로드
 
 ### 프론트엔드
+
 - [x] AIProviderSelector 컴포넌트
 - [x] AIAssistantPanel 컴포넌트
 - [x] SettingsPage 구현
@@ -516,6 +554,7 @@ cat ~/.highreview/ai-config.json
 - [ ] 코드 선택 컨텍스트 메뉴 (TODO)
 
 ### 문서화
+
 - [x] AI Provider Architecture 문서
 - [x] AI Integration Complete 문서
 - [x] API 사용 예시
@@ -525,6 +564,7 @@ cat ~/.highreview/ai-config.json
 ## 🎉 결론
 
 **완료 상태:**
+
 - ✅ AI Provider 시스템: 100% 완료
 - ✅ AI Review (리팩토링): 100% 완료
 - ✅ AI Assistant (백엔드): 100% 완료
@@ -533,12 +573,14 @@ cat ~/.highreview/ai-config.json
 - ⏳ ReviewPage 통합: 80% 완료 (AI Assistant 패널 추가 필요)
 
 **핵심 가치:**
+
 1. **확장성**: 새 provider 3단계로 추가 가능
 2. **사용성**: API 키 불필요, 로컬 우선
 3. **통합성**: 모든 AI 기능이 하나의 provider 사용
 4. **미래 대응**: Ollama, LM Studio, Codex 등 쉽게 추가 가능
 
 이제 사용자는:
+
 - ✅ 원하는 AI provider 자유롭게 선택
 - ✅ 별도 API 키 없이 로컬에서 AI 사용
 - ✅ 코드 리뷰, 채팅, 질의응답 모두 가능

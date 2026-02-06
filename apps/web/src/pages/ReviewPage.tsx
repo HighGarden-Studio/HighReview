@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import { useQuery } from '@tanstack/react-query';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { Allotment } from 'allotment';
 import { FileTree, type FileNode } from '../components/FileTree';
@@ -13,6 +16,7 @@ import { LanguageSelector } from '../components/LanguageSelector';
 import { EnhancedAIReviewPanel } from '../components/EnhancedAIReviewPanel';
 import { PRCommentThread } from '../components/PRCommentThread';
 import { ReviewSubmissionModal } from '../components/ReviewSubmissionModal';
+import { AIReviewOptionsModal } from '../components/AIReviewOptionsModal';
 import { CodeNavigationModal } from '../components/CodeNavigationModal';
 import { SearchResultsModal } from '../components/SearchResultsModal';
 import { usePendingReview } from '../hooks/usePendingReview';
@@ -102,6 +106,33 @@ interface AIReviewResult {
   refactorings?: Refactoring[];
 }
 
+// Helper function to extract changed line numbers from a unified diff patch
+function parseChangedLines(patch: string): Set<number> {
+  const changedLines = new Set<number>();
+  if (!patch) return changedLines;
+
+  const lines = patch.split('\n');
+  let currentLine = 0;
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      const match = line.match(/@@ -\d+,?\d* \+(\d+)(?:,\d+)? @@/);
+      if (match) {
+        currentLine = parseInt(match[1], 10) - 1;
+      }
+    } else if (line.startsWith('+')) {
+      currentLine++;
+      changedLines.add(currentLine);
+    } else if (line.startsWith('-')) {
+      // Deletions don't increment modified line count for the purpose of highlighting existing lines
+    } else {
+      currentLine++;
+    }
+  }
+
+  return changedLines;
+}
+
 export function ReviewPage({
   worktreePath,
   baseBranch = 'main',
@@ -116,6 +147,7 @@ export function ReviewPage({
   const { theme } = useTheme();
   const { language } = useLanguage();
   const location = useLocation();
+  const navigate = useNavigate();
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
   const [initialScrollPosition, setInitialScrollPosition] = useState<'top' | 'bottom'>('top');
   const [showChat, setShowChat] = useState(() => {
@@ -126,6 +158,7 @@ export function ReviewPage({
   const [aiReviewData, setAIReviewData] = useState<AIReviewResult | null>(null);
   const [aiReviewLoading, setAIReviewLoading] = useState(true); // Start with loading=true to show modal immediately
   const [aiReviewStep, setAIReviewStep] = useState<AIReviewStep>('cloning'); // Start with cloning
+  const [chunkedReviewProgress, setChunkedReviewProgress] = useState<any>(null);
 
   // AbortController for cancelling AI review
   const aiReviewAbortController = useRef<AbortController | null>(null);
@@ -165,6 +198,7 @@ export function ReviewPage({
     title: '',
     locations: [],
   });
+  const [showAIOptionsModal, setShowAIOptionsModal] = useState(false);
   const [highlightedAIReview, setHighlightedAIReview] = useState<{
     type: 'issue' | 'callstack';
     data: AIReviewComment | CallStackInfo;
@@ -184,6 +218,39 @@ export function ReviewPage({
     loading: false,
     truncated: false,
   });
+  const [showPRDetailsModal, setShowPRDetailsModal] = useState(false);
+
+  // Helper functions
+  const findFileInTree = useCallback((nodes: FileNode[], path: string): FileNode | null => {
+    for (const node of nodes) {
+      if (node.path === path && node.type === 'file') {
+        return node;
+      }
+      if (node.type === 'directory' && node.children) {
+        const found = findFileInTree(node.children, path);
+        if (found) return found;
+      }
+    }
+    return null;
+  }, []);
+
+  const findFirstPRFileInTree = useCallback((nodes: FileNode[], changedSet: Set<string>): FileNode | null => {
+    for (const node of nodes) {
+      if (node.type === 'file' && changedSet.has(node.path)) {
+        return node;
+      }
+      if (node.type === 'directory' && node.children) {
+        const found = findFirstPRFileInTree(node.children, changedSet);
+        if (found) return found;
+      }
+    }
+    return null;
+  }, []);
+
+  // Navigation history state
+  const [navigationHistory, setNavigationHistory] = useState<FileNode[]>([]);
+  const [navigationPointer, setNavigationPointer] = useState(-1);
+  const isNavigatingHistory = useRef(false);
 
   // Get PR info from location state
   const prInfo = location.state as { owner?: string; repo?: string; prNumber?: string } | null;
@@ -300,6 +367,18 @@ export function ReviewPage({
     return set;
   }, [prData]);
 
+  // Create Map of changed line numbers per file
+  const changedLinesMap = useMemo(() => {
+    if (!prData?.files) return {};
+    const map: Record<string, Set<number>> = {};
+    prData.files.forEach((file: any) => {
+      if (file.patch) {
+        map[file.path] = parseChangedLines(file.patch);
+      }
+    });
+    return map;
+  }, [prData]);
+
   // Create Map of file change statistics with comment counts
   const fileStatsMap = useMemo(() => {
     if (!prData?.files) return undefined;
@@ -322,6 +401,7 @@ export function ReviewPage({
         additions: file.additions || 0,
         deletions: file.deletions || 0,
         status: file.status,
+        commentCount: commentCountByFile.get(file.path) || 0,
       });
     });
     return map;
@@ -351,19 +431,6 @@ export function ReviewPage({
   // Auto-select file if initialFilePath is provided
   useEffect(() => {
     if (initialFilePath && treeData?.tree) {
-      const findFileInTree = (nodes: FileNode[], path: string): FileNode | null => {
-        for (const node of nodes) {
-          if (node.path === path && node.type === 'file') {
-            return node;
-          }
-          if (node.type === 'directory' && node.children) {
-            const found = findFileInTree(node.children, path);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-
       const fileNode = findFileInTree(treeData.tree, initialFilePath);
       if (fileNode) {
         setInitialScrollPosition('top');
@@ -391,7 +458,19 @@ export function ReviewPage({
         }
       }
     }
-  }, [initialFilePath, treeData, commentInfo]);
+  }, [initialFilePath, treeData, commentInfo, findFileInTree]);
+
+  // Default selection: select the first PR file based on tree order if none selected
+  useEffect(() => {
+    if (!selectedFile && !initialFilePath && treeData?.tree && changedFilesSet) {
+      const firstPRFile = findFirstPRFileInTree(treeData.tree, changedFilesSet);
+      if (firstPRFile) {
+        console.log('[ReviewPage] Auto-selecting first PR file from tree:', firstPRFile.path);
+        setInitialScrollPosition('top');
+        setSelectedFile(firstPRFile);
+      }
+    }
+  }, [treeData, changedFilesSet, selectedFile, initialFilePath, findFirstPRFileInTree]);
 
   // Determine if current file is a PR file (for showing diff vs code editor)
   const isPRFile = selectedFile && changedFilesSet?.has(selectedFile.path);
@@ -490,6 +569,69 @@ export function ReviewPage({
     }
   }, [prData, selectedFile]);
 
+  const handleGoBack = useCallback(() => {
+    if (navigationPointer > 0) {
+      isNavigatingHistory.current = true;
+      const nextPointer = navigationPointer - 1;
+      const fileNode = navigationHistory[nextPointer];
+      setNavigationPointer(nextPointer);
+      setSelectedFile(fileNode);
+    }
+  }, [navigationHistory, navigationPointer]);
+
+  const handleGoForward = useCallback(() => {
+    if (navigationPointer < navigationHistory.length - 1) {
+      isNavigatingHistory.current = true;
+      const nextPointer = navigationPointer + 1;
+      const fileNode = navigationHistory[nextPointer];
+      setNavigationPointer(nextPointer);
+      setSelectedFile(fileNode);
+    }
+  }, [navigationHistory, navigationPointer]);
+
+  // Track selected file changes for history
+  useEffect(() => {
+    if (!selectedFile) return;
+
+    if (isNavigatingHistory.current) {
+      isNavigatingHistory.current = false;
+      return;
+    }
+
+    setNavigationHistory(prev => {
+      // Don't add if it's the same as current
+      if (navigationPointer >= 0 && prev[navigationPointer]?.path === selectedFile.path) {
+        return prev;
+      }
+
+      // Add new and clear future history
+      const newHistory = prev.slice(0, navigationPointer + 1);
+      newHistory.push(selectedFile);
+      setNavigationPointer(newHistory.length - 1);
+      return newHistory;
+    });
+  }, [selectedFile, navigationPointer]);
+
+  // Handle keyboard shortcuts for navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd + [ or Alt + Left for Back
+      if ((e.metaKey && e.key === '[') || (e.altKey && e.key === 'ArrowLeft')) {
+        e.preventDefault();
+        handleGoBack();
+      }
+      // Cmd + ] or Alt + Right for Forward
+      if ((e.metaKey && e.key === ']') || (e.altKey && e.key === 'ArrowRight')) {
+        e.preventDefault();
+        handleGoForward();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleGoBack, handleGoForward]);
+
+
   const getLanguageFromFilename = (filename: string): string => {
     const ext = filename.split('.').pop()?.toLowerCase();
     const languageMap: Record<string, string> = {
@@ -558,6 +700,7 @@ export function ReviewPage({
 
       // All conditions met, perform AI review
       setAIReviewStep('preparing');
+      setChunkedReviewProgress(null);
 
       // Create new AbortController for this review
       const abortController = new AbortController();
@@ -574,9 +717,9 @@ export function ReviewPage({
         if (abortController.signal.aborted) return;
         setAIReviewStep('thinking');
 
-        // This is the long blocking call (2-5 minutes)
+        // This is the long blocking call (2-5 minutes) - using streaming for progress updates
         const response = await fetch(
-          `/api/prs/${prInfo.owner}/${prInfo.repo}/${prInfo.prNumber}/ai-review`,
+          `/api/prs/${prInfo.owner}/${prInfo.repo}/${prInfo.prNumber}/ai-review/stream`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -596,12 +739,68 @@ export function ReviewPage({
           throw new Error(`AI review failed: ${response.status}`);
         }
 
+        // Handle streaming response
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalReview: any = null;
+
+        if (!reader) {
+          throw new Error('Failed to get stream reader');
+        }
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const dataLine = line.trim();
+            if (!dataLine.startsWith('data: ')) continue;
+
+            try {
+              const data = JSON.parse(dataLine.substring(6));
+              console.log('[AI Review Stream] Received event:', data.type || data.status);
+
+              if (data.type === 'progress') {
+                setChunkedReviewProgress({
+                  currentChunk: data.currentChunk,
+                  totalChunks: data.totalChunks,
+                  currentFiles: data.currentFiles || [],
+                  completedFiles: data.completedFiles || [],
+                  status: data.status,
+                });
+                
+                // Update overall step based on status if needed
+                if (data.status === 'reviewing') setAIReviewStep('thinking');
+                else if (data.status === 'summarizing') setAIReviewStep('summarizing');
+                else if (data.status === 'merging') setAIReviewStep('finalizing');
+              } else if (data.type === 'complete' || data.type === 'cached') {
+                finalReview = data.review;
+              } else if (data.type === 'metadata') {
+                // Handle incremental metadata updates for large reviews
+                if (finalReview) {
+                  finalReview[data.field] = data.data;
+                }
+              } else if (data.type === 'error') {
+                throw new Error(data.message || 'Stream processing error');
+              }
+            } catch (e) {
+              console.error('[AI Review Stream] Failed to parse SSE data:', e, dataLine);
+            }
+          }
+        }
+
         setAIReviewStep('finalizing');
 
-        const result = await response.json();
-        if (abortController.signal.aborted) return;
-        
-        setAIReviewData(result.review);
+        if (!finalReview) {
+          throw new Error('No review result received from stream');
+        }
+
+        setAIReviewData(finalReview);
 
         // Set metadata
         setAIReviewMetadata({
@@ -844,11 +1043,17 @@ export function ReviewPage({
     return comments;
   };
 
-  const handleReRunAIReview = async () => {
+  const handleReRunAIReview = () => {
+    setShowAIOptionsModal(true);
+  };
+
+  const handleStartReviewWithOptions = async (options: any) => {
     if (!prInfo?.owner || !prInfo?.repo || !prInfo?.prNumber) return;
 
+    setShowAIOptionsModal(false);
     setAIReviewLoading(true);
     setAIReviewStep('preparing');
+    setChunkedReviewProgress(null);
 
     try {
       // Brief delay to show "Preparing" step
@@ -859,9 +1064,9 @@ export function ReviewPage({
       await new Promise(resolve => setTimeout(resolve, 500));
       setAIReviewStep('thinking');
 
-      // This is the long blocking call (2-5 minutes)
+      // This is the long blocking call (2-5 minutes) - using streaming for progress updates
       const response = await fetch(
-        `/api/prs/${prInfo.owner}/${prInfo.repo}/${prInfo.prNumber}/ai-review`,
+        `/api/prs/${prInfo.owner}/${prInfo.repo}/${prInfo.prNumber}/ai-review/stream`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -870,7 +1075,7 @@ export function ReviewPage({
             baseBranch,
             language,
             options: {
-              ...aiReviewOptions,
+              ...options,
               forceRerun: true, // Force delete existing reviews and generate fresh results
             },
           }),
@@ -883,10 +1088,62 @@ export function ReviewPage({
         throw new Error(`AI review failed: ${response.status} - ${errorText}`);
       }
 
+      // Handle streaming response
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalReview: any = null;
+
+      if (!reader) {
+        throw new Error('Failed to get stream reader');
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const dataLine = line.trim();
+          if (!dataLine.startsWith('data: ')) continue;
+
+          try {
+            const data = JSON.parse(dataLine.substring(6));
+            if (data.type === 'progress') {
+              setChunkedReviewProgress({
+                currentChunk: data.currentChunk,
+                totalChunks: data.totalChunks,
+                currentFiles: data.currentFiles || [],
+                completedFiles: data.completedFiles || [],
+                status: data.status,
+              });
+              
+              if (data.status === 'reviewing') setAIReviewStep('thinking');
+              else if (data.status === 'summarizing') setAIReviewStep('summarizing');
+              else if (data.status === 'merging') setAIReviewStep('finalizing');
+            } else if (data.type === 'complete' || data.type === 'cached') {
+              finalReview = data.review;
+            } else if (data.type === 'metadata') {
+              if (finalReview) finalReview[data.field] = data.data;
+            } else if (data.type === 'error') {
+              throw new Error(data.message || 'Stream processing error');
+            }
+          } catch (e) {
+            console.error('[AI Review Stream] Failed to parse SSE data:', e, dataLine);
+          }
+        }
+      }
+
       setAIReviewStep('finalizing');
 
-      const result = await response.json();
-      setAIReviewData(result.review);
+      if (!finalReview) {
+        throw new Error('No review result received from stream');
+      }
+
+      setAIReviewData(finalReview);
 
       // Get current HEAD commit SHA
       const currentHeadSha = prData?.pullRequest?.headRefOid;
@@ -956,25 +1213,16 @@ export function ReviewPage({
       await submitReview(event, body);
       toast.success('Review submitted successfully!');
       setShowReviewModal(false);
+      
+      // Navigate back to PR detail page after successful submission
+      navigate(`/prs/${owner}/${repo}/${prNumber}`);
     } catch (error) {
       console.error('[ReviewPage] Failed to submit review:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to submit review');
     }
   };
 
-  // Helper function to find file in tree
-  const findFileInTree = useCallback((nodes: FileNode[], path: string): FileNode | null => {
-    for (const node of nodes) {
-      if (node.path === path && node.type === 'file') {
-        return node;
-      }
-      if (node.type === 'directory' && node.children) {
-        const found = findFileInTree(node.children, path);
-        if (found) return found;
-      }
-    }
-    return null;
-  }, []);
+
 
   // Code navigation handlers
   const handleShowReferences = useCallback(async (references: CodeReference[], title: string) => {
@@ -1300,7 +1548,7 @@ export function ReviewPage({
       {/* Full Screen Loading Spinner */}
       {(treeLoading || aiReviewLoading) && (
         <div className="absolute inset-0 bg-gradient-to-br from-light-bg/95 via-light-bg/90 to-light-bg/95 dark:from-dark-bg/95 dark:via-dark-bg/90 dark:to-dark-bg/95 backdrop-blur-md z-50 flex items-center justify-center">
-          <div className="relative max-w-lg w-full mx-4">
+          <div className="relative max-w-3xl w-full mx-4">
             {/* Gradient border wrapper with animation */}
             <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-light-accent-primary via-light-accent-secondary to-light-accent-primary dark:from-dark-accent-primary dark:via-dark-accent-secondary dark:to-dark-accent-primary opacity-75 blur-xl animate-pulse"></div>
             {/* Static content with enhanced styling */}
@@ -1332,10 +1580,10 @@ export function ReviewPage({
                   {/* Step 0: Cloning repository */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'cloning' ? 'opacity-100 scale-105' :
-                    ['checkout', 'indexing', 'loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['checkout', 'indexing', 'loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {['checkout', 'indexing', 'loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? (
+                      {['checkout', 'indexing', 'loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1366,10 +1614,10 @@ export function ReviewPage({
                   {/* Step 1: Checking out PR */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'checkout' ? 'opacity-100 scale-105' :
-                    ['indexing', 'loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['indexing', 'loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {['indexing', 'loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? (
+                      {['indexing', 'loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1400,10 +1648,10 @@ export function ReviewPage({
                   {/* Step 2: Indexing */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'indexing' ? 'opacity-100 scale-105' :
-                    ['loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {['loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? (
+                      {['loading', 'preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1434,10 +1682,10 @@ export function ReviewPage({
                   {/* Step 1: Loading */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'loading' ? 'opacity-100 scale-105' :
-                    ['preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {['preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? (
+                      {['preparing', 'collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1468,10 +1716,10 @@ export function ReviewPage({
                   {/* Step 2: Preparing */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'preparing' ? 'opacity-100 scale-105' :
-                    ['collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {['collecting', 'analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? (
+                      {['collecting', 'analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1502,10 +1750,10 @@ export function ReviewPage({
                   {/* Step 3: Collecting context */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'collecting' ? 'opacity-100 scale-105' :
-                    ['analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {['analyzing', 'thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? (
+                      {['analyzing', 'thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1536,10 +1784,10 @@ export function ReviewPage({
                   {/* Step 4: Analyzing */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'analyzing' ? 'opacity-100 scale-105' :
-                    ['thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {['thinking', 'generating', 'finalizing', 'completed'].includes(aiReviewStep) ? (
+                      {['thinking', 'generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1570,10 +1818,10 @@ export function ReviewPage({
                   {/* Step 5: Thinking */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'thinking' ? 'opacity-100 scale-105' :
-                    ['generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {['generating', 'finalizing', 'completed'].includes(aiReviewStep) ? (
+                      {['generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1588,15 +1836,31 @@ export function ReviewPage({
                     <div className="flex-1">
                       <span className={`text-sm font-semibold ${
                         aiReviewStep === 'thinking' ? 'text-light-accent-primary dark:text-dark-accent-primary' :
-                        ['generating', 'finalizing', 'completed'].includes(aiReviewStep) ? 'text-green-600 dark:text-green-400' :
+                        ['generating', 'summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'text-green-600 dark:text-green-400' :
                         'text-light-text-secondary dark:text-dark-text-secondary'
                       }`}>
-                        AI is thinking
+                        AI is reviewing
                       </span>
                       {aiReviewStep === 'thinking' && (
-                        <p className="text-xs text-light-text-muted dark:text-dark-text-muted mt-1">
-                          Deep analysis in progress...
-                        </p>
+                        <div className="mt-1.5 space-y-1.5">
+                          <p className="text-xs text-light-text-muted dark:text-dark-text-muted flex items-center justify-between">
+                            <span>Deep analysis in progress...</span>
+                            {chunkedReviewProgress && chunkedReviewProgress.totalChunks > 0 && (
+                              <span className="text-[10px] font-mono bg-light-accent-primary/10 dark:bg-dark-accent-primary/10 px-1.5 py-0.5 rounded text-light-accent-primary dark:text-dark-accent-primary">
+                                Chunk {chunkedReviewProgress.currentChunk}/{chunkedReviewProgress.totalChunks} ({Math.round((chunkedReviewProgress.currentChunk / chunkedReviewProgress.totalChunks) * 100)}%)
+                              </span>
+                            )}
+                          </p>
+                          {chunkedReviewProgress && chunkedReviewProgress.currentFiles && chunkedReviewProgress.currentFiles.length > 0 && (
+                            <div className="flex items-start gap-1.5 px-2 py-1.5 bg-light-bg/50 dark:bg-dark-bg/50 rounded border border-light-border/20 dark:border-dark-border/20">
+                              <div className="mt-1 w-1.5 h-1.5 rounded-full bg-light-accent-primary dark:bg-dark-accent-primary animate-pulse flex-shrink-0" />
+                              <p className="text-[10px] text-light-text-secondary dark:text-dark-text-secondary leading-relaxed line-clamp-2 break-all">
+                                <span className="font-medium opacity-70">Analyzing: </span>
+                                {chunkedReviewProgress.currentFiles.join(', ')}
+                              </p>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1604,7 +1868,7 @@ export function ReviewPage({
                   {/* Step 6: Generating */}
                   <div className={`flex items-start gap-3 transition-all duration-300 ${
                     aiReviewStep === 'generating' ? 'opacity-100 scale-105' :
-                    ['finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
+                    ['summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
                       {['finalizing', 'completed'].includes(aiReviewStep) ? (
@@ -1613,7 +1877,7 @@ export function ReviewPage({
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                           </svg>
                         </div>
-                      ) : aiReviewStep === 'generating' ? (
+                      ) : (aiReviewStep === 'generating' || aiReviewStep === 'summarizing') ? (
                         <div className="w-5 h-5 border-2 border-light-accent-primary dark:border-dark-accent-primary border-t-transparent rounded-full animate-spin shadow-sm" />
                       ) : (
                         <div className="w-5 h-5 rounded-full border-2 border-light-border dark:border-dark-border" />
@@ -1622,7 +1886,7 @@ export function ReviewPage({
                     <div className="flex-1">
                       <span className={`text-sm font-semibold ${
                         aiReviewStep === 'generating' ? 'text-light-accent-primary dark:text-dark-accent-primary' :
-                        ['finalizing', 'completed'].includes(aiReviewStep) ? 'text-green-600 dark:text-green-400' :
+                        ['summarizing', 'finalizing', 'completed'].includes(aiReviewStep) ? 'text-green-600 dark:text-green-400' :
                         'text-light-text-secondary dark:text-dark-text-secondary'
                       }`}>
                         Generating insights
@@ -1641,7 +1905,7 @@ export function ReviewPage({
                     aiReviewStep === 'completed' ? 'opacity-100' : 'opacity-40'
                   }`}>
                     <div className="flex-shrink-0 mt-0.5">
-                      {aiReviewStep === 'completed' ? (
+                      {['completed'].includes(aiReviewStep) ? (
                         <div className="w-5 h-5 rounded-full bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center shadow-md">
                           <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -1710,6 +1974,41 @@ export function ReviewPage({
                 </svg>
               </button>
 
+              <div className="w-px h-4 bg-[#d1d1d1] dark:bg-[#454545] mx-0.5" />
+
+              <div className="flex items-center gap-0.5">
+                <button
+                  onClick={handleGoBack}
+                  disabled={navigationPointer <= 0}
+                  className={`p-1.5 rounded transition-colors ${
+                    navigationPointer > 0 
+                      ? 'hover:bg-[#e0e0e0] dark:hover:bg-[#2d2d30] text-[#424242] dark:text-[#cccccc]' 
+                      : 'text-[#424242]/30 dark:text-[#cccccc]/30 cursor-not-allowed'
+                  }`}
+                  title="Go back (Cmd + [)"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <button
+                  onClick={handleGoForward}
+                  disabled={navigationPointer >= navigationHistory.length - 1}
+                  className={`p-1.5 rounded transition-colors ${
+                    navigationPointer < navigationHistory.length - 1
+                      ? 'hover:bg-[#e0e0e0] dark:hover:bg-[#2d2d30] text-[#424242] dark:text-[#cccccc]' 
+                      : 'text-[#424242]/30 dark:text-[#cccccc]/30 cursor-not-allowed'
+                  }`}
+                  title="Go forward (Cmd + ])"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="w-px h-4 bg-[#d1d1d1] dark:bg-[#454545] mx-0.5" />
+
               {/* PR Info: Number, State, AI Reviewed Badge */}
               {prData?.pullRequest && prInfo && (
                 <>
@@ -1723,19 +2022,27 @@ export function ReviewPage({
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-[#2d2d30] rounded border border-[#d1d1d1] dark:border-[#454545]">
+                  <button
+                    onClick={() => setShowPRDetailsModal(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-[#2d2d30] rounded border border-[#d1d1d1] dark:border-[#454545] hover:border-[#007acc] transition-all"
+                    title="View PR Details"
+                  >
                     <svg className="w-3.5 h-3.5 text-[#007acc] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                     </svg>
                     <span className="text-xs font-medium text-[#424242] dark:text-[#cccccc]">
                       #{prInfo.prNumber}
                     </span>
-                  </div>
+                  </button>
 
                   {/* PR Title */}
-                  <h1 className="text-sm font-semibold text-[#424242] dark:text-[#cccccc] truncate max-w-md">
+                  <button
+                    onClick={() => setShowPRDetailsModal(true)}
+                    className="text-sm font-semibold text-[#424242] dark:text-[#cccccc] truncate max-w-md hover:text-[#007acc] transition-all text-left"
+                    title="View PR Details"
+                  >
                     {prData.pullRequest.title}
-                  </h1>
+                  </button>
 
                   <span className="text-[#8c8c8c]">•</span>
 
@@ -2180,6 +2487,7 @@ export function ReviewPage({
                     <AIProgressIndicator
                       isActive={aiReviewLoading}
                       currentStep={aiReviewStep}
+                      chunkedReviewProgress={chunkedReviewProgress}
                       onComplete={() => {
                       }}
                     />
@@ -2195,6 +2503,7 @@ export function ReviewPage({
                   highlightedItem={highlightedAIReview}
                   onHighlightedItemProcessed={() => setHighlightedAIReview(null)}
                   onFileSelect={handleFileSelect}
+                  changedLines={changedLinesMap}
                 />
               ) : (
                 <div className="flex flex-col h-full">
@@ -2268,6 +2577,13 @@ export function ReviewPage({
         />
       )}
 
+      {/* AI Review Options Modal */}
+      <AIReviewOptionsModal
+        isOpen={showAIOptionsModal}
+        onClose={() => setShowAIOptionsModal(false)}
+        onConfirm={handleStartReviewWithOptions}
+      />
+
       {/* Code Navigation Modal */}
       {navigationModal.show && (
         <CodeNavigationModal
@@ -2313,6 +2629,91 @@ export function ReviewPage({
         }}
         truncated={searchModal.truncated}
       />
+
+      {/* PR Details Modal */}
+      {showPRDetailsModal && prData?.pullRequest && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-light-surface dark:bg-dark-surface w-full max-w-4xl max-h-[85vh] rounded-2xl shadow-2xl border border-light-border dark:border-dark-border flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-light-border dark:border-dark-border bg-light-bg dark:bg-dark-bg">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-[#007acc]/10 rounded-lg">
+                  <svg className="w-5 h-5 text-[#007acc]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-light-text-primary dark:text-dark-text-primary flex items-center gap-2">
+                    <span className="text-[#007acc]">#{prInfo?.prNumber}</span>
+                    <span className="text-light-border dark:text-dark-border">|</span>
+                    {prData.pullRequest.title}
+                  </h2>
+                  <div className="flex items-center gap-3 mt-0.5">
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      prData.pullRequest.state === 'OPEN' ? 'bg-green-500/10 text-green-500' : 
+                      prData.pullRequest.state === 'MERGED' ? 'bg-purple-500/10 text-purple-500' : 'bg-red-500/10 text-red-500'
+                    }`}>
+                      {prData.pullRequest.state}
+                    </span>
+                    <span className="text-xs text-light-text-muted dark:text-dark-text-muted flex items-center gap-1">
+                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" />
+                      </svg>
+                      {prData.pullRequest.author}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowPRDetailsModal(false)}
+                className="p-2 hover:bg-light-bg-hover dark:hover:bg-dark-bg-hover rounded-full transition-colors"
+              >
+                <svg className="w-6 h-6 text-light-text-secondary dark:text-dark-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-8 bg-light-surface dark:bg-dark-surface custom-scrollbar">
+              <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:font-bold prose-a:text-[#007acc] prose-pre:bg-light-bg dark:prose-pre:bg-dark-bg prose-pre:border prose-pre:border-light-border dark:prose-pre:border-dark-border">
+                {prData.pullRequest.body ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                    {prData.pullRequest.body}
+                  </ReactMarkdown>
+                ) : (
+                  <p className="italic text-light-text-muted dark:text-dark-text-muted">No description provided.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-light-border dark:border-dark-border bg-light-bg dark:bg-dark-bg flex justify-between items-center">
+              <div className="text-xs text-light-text-muted dark:text-dark-text-muted">
+                {prData.pullRequest.url && (
+                  <a 
+                    href={prData.pullRequest.url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 hover:text-[#007acc] transition-colors"
+                  >
+                    View on GitHub
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
+                )}
+              </div>
+              <button
+                onClick={() => setShowPRDetailsModal(false)}
+                className="px-6 py-2 bg-[#007acc] text-white rounded-lg font-semibold hover:bg-[#005a9e] transition-all shadow-md shadow-[#007acc]/20"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
