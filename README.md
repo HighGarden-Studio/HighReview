@@ -68,22 +68,65 @@ HighReview/
 
 ```mermaid
 flowchart TD
-    Start(["Start Review"]) --> Diff["Git Diff"]
-    Diff --> TreeSitter["ContextAnalyzer"]
-    TreeSitter --> |Offline Indexing| Index["Symbol Database"]
+    %% Nodes
+    Start(["User Initiates Review"])
 
-    Index --> AI_Prov["AI Provider\n(Claude/Ollama/LM)"]
-    AI_Prov --> |Stream| Client["Web UI"]
+    subgraph Stage1 ["Stage 1: Context Optimization"]
+        Diff["Get Git Diff"]
+        TreeSitter["ContextAnalyzer<br/>(Tree-sitter)"]
+        OptContext["Optimized Context<br/>(Signatures & Docstrings)"]
 
-    subgraph Analysis
-        Intent["Change Intent"]
-        Issues["Code Issues"]
-        Impact["Impact Analysis"]
+        Diff --> TreeSitter
+        TreeSitter --> |Extract| OptContext
     end
 
-    AI_Prov --> Intent
-    AI_Prov --> Issues
-    AI_Prov --> Impact
+    subgraph Stage2 ["Stage 2: Map Phase (Batch Processing)"]
+        Chunking["ChunkingStrategy<br/>(Split Files)"]
+
+        Batch1["Batch 1 Review<br/>(Code Reviewer Persona)"]
+        Batch2["Batch 2 Review<br/>(Code Reviewer Persona)"]
+        BatchN["Batch N Review<br/>(Code Reviewer Persona)"]
+
+        OptContext --> Chunking
+        Chunking --> Batch1
+        Chunking --> Batch2
+        Chunking --> BatchN
+    end
+
+    subgraph Stage3 ["Stage 3: Reduce Phase (Global Analysis)"]
+        Collect["Collect & Merge Results"]
+        Architect["PR Architect AI<br/>(RefineSummaryWithAI)"]
+
+        Output1["Global Change Intent"]
+        Output2["Impact Analysis"]
+        Output3["Logic Flow Diagrams<br/>(Mermaid)"]
+    end
+
+    %% Edge Connections
+    Start --> Diff
+
+    Batch1 --> |Issues + 1-Line Summary| Collect
+    Batch2 --> |Issues + 1-Line Summary| Collect
+    BatchN --> |Issues + 1-Line Summary| Collect
+
+    Collect --> |All Summaries| Architect
+
+    Architect --> Output1
+    Architect --> Output2
+    Architect --> Output3
+
+    Output1 --> Final(["Final Review Report"])
+    Output2 --> Final
+    Output3 --> Final
+
+    %% Styling
+    classDef stage fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef process fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+    classDef ai fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,rx:10,ry:10;
+
+    class Stage1,Stage2,Stage3 stage;
+    class TreeSitter,Chunking,Collect process;
+    class Batch1,Batch2,BatchN,Architect ai;
 ```
 
 ## 🛠 Tech Stack
