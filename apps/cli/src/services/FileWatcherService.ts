@@ -32,6 +32,7 @@ export class FileWatcherService {
       ignored: [
         '**/node_modules/**',
         '**/dist/**',
+        '**/dist-web/**',
         '**/build/**',
         '**/.git/**',
         '**/coverage/**',
@@ -41,14 +42,15 @@ export class FileWatcherService {
         '**/target/**', // Java build output
         '**/.idea/**',
         '**/.vscode/**',
+        '**/public/**', // Ignore public folder where Vite builds assets
         '**/*.map',
         '**/*.log',
       ],
       persistent: true,
       ignoreInitial: true, // Don't trigger for existing files
       awaitWriteFinish: {
-        stabilityThreshold: 300,
-        pollInterval: 100,
+        stabilityThreshold: 1000, // Increase to 1s to reduce EDR triggers
+        pollInterval: 200,
       },
     });
 

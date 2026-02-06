@@ -91,9 +91,10 @@ export class CodeIndexingService {
     console.log(`[CodeIndexing] Found ${files.length} files to index`);
 
     // Index files in batches
-    const batchSize = 50;
+    const batchSize = 10;
     for (let i = 0; i < files.length; i += batchSize) {
       const batch = files.slice(i, Math.min(i + batchSize, files.length));
+      
       await Promise.all(
         batch.map(async (file, idx) => {
           const current = i + idx + 1;
@@ -103,6 +104,11 @@ export class CodeIndexingService {
           await this.indexFile(repoPath, file);
         })
       );
+
+      // Add a small delay between batches to reduce I/O pressure for EDR
+      if (i + batchSize < files.length) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
     }
 
     const stats = this.db.getIndexStats(repoPath);
