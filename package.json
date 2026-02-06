@@ -9,16 +9,17 @@
     "packages/*"
   ],
   "scripts": {
+    "postinstall": "npm --prefix apps/cli install && npm --prefix apps/web install",
     "dev": "concurrently \"npm run dev:cli\" \"npm run dev:web\"",
-    "dev:cli": "npm run dev --workspace=apps/cli",
-    "dev:web": "npm run dev --workspace=apps/web",
-    "build": "npm run build --workspaces",
-    "build:cli": "npm run build --workspace=apps/cli",
-    "build:web": "npm run build --workspace=apps/web",
-    "start": "npm run start --workspace=apps/cli",
-    "test": "npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
-    "format": "npm run format --workspaces --if-present"
+    "dev:cli": "npm --prefix apps/cli run dev",
+    "dev:web": "npm --prefix apps/web run dev",
+    "build": "npm --prefix apps/cli run build && npm --prefix apps/web run build",
+    "build:cli": "npm --prefix apps/cli run build",
+    "build:web": "npm --prefix apps/web run build",
+    "start": "npm --prefix apps/cli run start",
+    "test": "npm --prefix apps/cli run test; npm --prefix apps/web run test",
+    "lint": "npm --prefix apps/cli run lint; npm --prefix apps/web run lint",
+    "format": "npm --prefix apps/cli run format; npm --prefix apps/web run format"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

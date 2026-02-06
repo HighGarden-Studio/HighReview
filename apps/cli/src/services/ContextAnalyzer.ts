@@ -1,9 +1,19 @@
 import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
-import JavaScript from 'tree-sitter-javascript';
-import Java from 'tree-sitter-java';
-import Python from 'tree-sitter-python';
-import Kotlin from 'tree-sitter-kotlin';
+
+function tryRequire(mod: string): any {
+  try {
+    return require(mod);
+  } catch {
+    console.warn(`[ContextAnalyzer] Failed to load ${mod}, skipping`);
+    return null;
+  }
+}
+
+const TypeScript = tryRequire('tree-sitter-typescript');
+const JavaScript = tryRequire('tree-sitter-javascript');
+const Java = tryRequire('tree-sitter-java');
+const Python = tryRequire('tree-sitter-python');
+const Kotlin = tryRequire('tree-sitter-kotlin');
 import { execa } from 'execa';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -83,39 +93,48 @@ export class ContextAnalyzer {
    */
   private initializeParsers(): void {
     // TypeScript
-    const tsParser = new Parser();
-    tsParser.setLanguage(TypeScript.typescript);
-    this.parsers.set('typescript', tsParser);
-    this.parsers.set('ts', tsParser);
-    this.parsers.set('tsx', tsParser);
+    if (TypeScript) {
+      const tsParser = new Parser();
+      tsParser.setLanguage(TypeScript.typescript);
+      this.parsers.set('typescript', tsParser);
+      this.parsers.set('ts', tsParser);
+      this.parsers.set('tsx', tsParser);
+    }
 
     // JavaScript
-    const jsParser = new Parser();
-    jsParser.setLanguage(JavaScript);
-    this.parsers.set('javascript', jsParser);
-    this.parsers.set('js', jsParser);
-    this.parsers.set('jsx', jsParser);
+    if (JavaScript) {
+      const jsParser = new Parser();
+      jsParser.setLanguage(JavaScript);
+      this.parsers.set('javascript', jsParser);
+      this.parsers.set('js', jsParser);
+      this.parsers.set('jsx', jsParser);
+      // Vue (use JavaScript parser as fallback)
+      this.parsers.set('vue', jsParser);
+    }
 
     // Java
-    const javaParser = new Parser();
-    javaParser.setLanguage(Java);
-    this.parsers.set('java', javaParser);
+    if (Java) {
+      const javaParser = new Parser();
+      javaParser.setLanguage(Java);
+      this.parsers.set('java', javaParser);
+    }
 
     // Python
-    const pythonParser = new Parser();
-    pythonParser.setLanguage(Python);
-    this.parsers.set('python', pythonParser);
-    this.parsers.set('py', pythonParser);
+    if (Python) {
+      const pythonParser = new Parser();
+      pythonParser.setLanguage(Python);
+      this.parsers.set('python', pythonParser);
+      this.parsers.set('py', pythonParser);
+    }
 
     // Kotlin
-    const kotlinParser = new Parser();
-    kotlinParser.setLanguage(Kotlin);
-    this.parsers.set('kotlin', kotlinParser);
-    this.parsers.set('kt', kotlinParser);
-    this.parsers.set('kts', kotlinParser);
-
-    // Vue (use JavaScript parser for Vue files as fallback)
-    this.parsers.set('vue', jsParser);
+    if (Kotlin) {
+      const kotlinParser = new Parser();
+      kotlinParser.setLanguage(Kotlin);
+      this.parsers.set('kotlin', kotlinParser);
+      this.parsers.set('kt', kotlinParser);
+      this.parsers.set('kts', kotlinParser);
+    }
 
     console.log('[ContextAnalyzer] Initialized parsers for:', Array.from(this.parsers.keys()));
   }
@@ -434,7 +453,7 @@ export class ContextAnalyzer {
 
       // Step 3: Verify each match with Tree-sitter
       for (const match of matches) {
-        const [filePath, lineStr, columnStr, ...textParts] = match.split(':');
+        const [filePath, lineStr, columnStr] = match.split(':');
         const line = parseInt(lineStr, 10);
         const column = parseInt(columnStr, 10);
 
@@ -628,7 +647,7 @@ export class ContextAnalyzer {
         }
       }
 
-      let signature = '';
+      let signature: string;
       if (bodyStartRow === -1 || bodyStartRow === startRow) {
         // Fallback: take the first line and truncate if it contains body start
         signature = lines[startRow];
@@ -1141,7 +1160,7 @@ export class ContextAnalyzer {
             const matches = stdout.split('\n').filter(line => line.trim());
 
             for (const match of matches) {
-              const [matchFilePath, lineStr, columnStr, ...rest] = match.split(':');
+              const [matchFilePath, lineStr, columnStr] = match.split(':');
               const matchLine = parseInt(lineStr, 10);
               const matchColumn = parseInt(columnStr, 10);
 
@@ -1251,12 +1270,9 @@ export class ContextAnalyzer {
 
       // Check for Kotlin: class X : Y
       // Pattern: class name : interface/base class
-      if (lineContent.includes('class') && lineContent.includes(':') &&
-          lineContent.includes(interfaceName)) {
-        return true;
-      }
+      return lineContent.includes('class') && lineContent.includes(':') && lineContent.includes(interfaceName);
 
-      return false;
+
     } catch (error) {
       return false;
     }
